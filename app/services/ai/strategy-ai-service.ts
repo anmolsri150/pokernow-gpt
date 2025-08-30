@@ -70,6 +70,11 @@ export class StrategyAIService extends AIService {
   private convertStrategyDecisionToBotAction(decision: StrategyDecision): BotAction {
     const action = normalizeAction(decision.action);
 
+    if (action === "all-in") {
+      // All-in action - bet size will be handled by the bot
+      return { action_str: "all-in", bet_size_in_BBs: 0 };
+    }
+
     if (action === "bet" || action === "raise") {
       // Prefer potFraction -> chips -> BB.
       let betBBs = 0;
@@ -158,13 +163,13 @@ export class StrategyAIService extends AIService {
       const heroCards = this.game.getHero()?.getHand() || [];
       const handStrength = this.evaluateHandStrength(heroCards);
       
-      // Only fold if bet is unusually high (>3 BB for 5/10, >2 BB for 10/20) AND we have very weak cards
-      const bigBlind = this.game?.getBigBlind() ?? 10;
-      const highBetThreshold = bigBlind === 10 ? 3 : 2; // 3BB for 5/10, 2BB for 10/20
-      
-      if (lastRaiseSize > highBetThreshold && handStrength < 3) {
-        return decision; // Keep the fold
-      } else {
+             // Only fold if bet is unusually high (>3 BB for 5/10, >2 BB for 10/20) AND we have very weak cards
+       const bigBlind = this.game?.getBigBlind() ?? 10;
+       const highBetThreshold = bigBlind === 10 ? 3 : 2; // 3BB for 5/10, 2BB for 10/20
+       
+       if (lastRaiseSize > highBetThreshold && handStrength < 2) {
+         return decision; // Keep the fold
+       } else {
         // Convert fold to call/check for first hand
         return {
           ...decision,
@@ -264,13 +269,14 @@ function fmtNum(x?: number): string {
   return typeof x === "number" && isFinite(x) ? x.toFixed(2) : "—";
 }
 
-function normalizeAction(a?: string): "bet" | "raise" | "call" | "check" | "fold" {
+function normalizeAction(a?: string): "bet" | "raise" | "call" | "check" | "fold" | "all-in" {
   switch ((a || "").toLowerCase()) {
     case "bet": return "bet";
     case "raise": return "raise";
     case "call": return "call";
     case "check": return "check";
     case "fold": return "fold";
+    case "all-in": return "all-in";
     default: return "check";
   }
 }
