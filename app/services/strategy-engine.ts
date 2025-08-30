@@ -215,6 +215,44 @@ private boardTextureFlags(): {
   }
   
 
+// --- helpers (near other helpers) ---
+private hasLimpersBeforeHero(): boolean {
+    try {
+      const acts = this.table.getPlayerActions();
+      let sawLimp = false, sawRaise = false;
+      for (const a of acts) {
+        if (a.getAction() === 'raise' || a.getAction() === 'bet') { sawRaise = true; break; }
+        if (a.getAction() === 'call') sawLimp = true;
+      }
+      return sawLimp && !sawRaise;
+    } catch { return false; }
+  }
+  
+  private getIsoSizeBB(position: string, limpers: number): number {
+    const ip = this.isLatePosition(position);
+    // Standard: (4–5)BB + 1BB per limper (bigger OOP).
+    return (ip ? 4.0 : 5.0) + limpers * 1.0;
+  }
+  
+  // helper: cheap equity proxy (backdoors/overcards/BDNFD)
+private hasLightEquity(hero: string[], board: string[]): boolean {
+    const vals = this.cardsToRankVals([...hero, ...board], true);
+    // Two overs, or one over + backdoor (monotone not required):
+    const heroVals = this.cardsToRankVals(hero, true);
+    const maxBoard = Math.max(...this.cardsToRankVals(board, true), 0);
+    const overs = heroVals.filter(v => v > maxBoard).length;
+    return overs >= 2 || overs === 1; // intentionally liberal for HU stab
+  }
+  // helper
+private shouldJamLowSPR(h: HandStrength): boolean {
+    if (this.spr() > 1.2) return false;
+    // Jam value with trips+; jam strong draws (≥12 outs) or pair+FD
+    if (h.strength >= 6) return true; // trips or better
+    if (h.type.includes('draw') && (h.outs ?? 0) >= 12) return true;
+    return false;
+  }
+  
+
   /* -------------------- Preflop -------------------- */
 
   private getPreflopDecision(): StrategyDecision {
@@ -368,6 +406,20 @@ private boardTextureFlags(): {
   
 
   private handlePreflopNoRaise(handStrength: HandStrength, position: string): StrategyDecision {
+     // ISO over limpers (value heavy, some suited-broadway bluffs IP)
+    if (this.hasLimpersBeforeHero()) {
+        const acts = this.table.getPlayerActions();
+        const limpers = acts.filter(a => a.getAction()==='call').length;
+        if (handStrength.strength >= 5 || (this.isLatePosition(position) && handStrength.strength >= 4)) {
+        return {
+            action: "raise",
+            betSize: this.getIsoSizeBB(position, limpers),
+            reasoning: `Isolate ${limpers} limper(s) — attack dead money`,
+            confidence: 0.85
+        };
+        }
+        return { action: "check", reasoning: "Limp pot — skip marginal ISO", confidence: 0.75 };
+    }
     if (handStrength.strength >= 7) {
       return {
         action: "raise",
@@ -462,7 +514,15 @@ private boardTextureFlags(): {
   private handlePostflopRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
     const lastRaise = this.getLastRaiseSize();
     const potOdds = this.calculatePotOdds(lastRaise);
-
+    if (this.shouldJamLowSPR(handStrength)) {
+        return {
+          action: "raise",
+          betSize: this.game.getHero()!.getStackSize(), // NOTE: ensure this is in BBs
+          reasoning: "Low SPR — maximize fold equity / value via jam",
+          confidence: 0.82
+        };
+      }
+      
     if (lastRaise <= 0) {
         // Treat as no actionable raise — default to value bet with strong, otherwise check/call logic
         if (handStrength.strength >= 7) {
@@ -561,6 +621,17 @@ private boardTextureFlags(): {
     const tag = this.getPrimaryVillainTag();
 
     const threat = this.boardThreatScore();
+    // Heads-up, checked to us: cheap stab on low-threat boards with light equity
+    if ((this.table.getPlayersInPot?.() ?? 2) === 2 && threat < 2.0) {
+        const heroCards = this.game.getHero()!.getHand();
+        const board = this.parseCommunityCards(this.table.getRunout());
+        if (this.hasLightEquity(heroCards, board) && handStrength.strength <= 3 && !handStrength.type.includes('draw')) {
+        if (this.isLatePosition(position)) {
+            return { action:"bet", betSize: potSize * 0.33, reasoning:"HU missed c-bet: auto-stab low threat", confidence:0.66 };
+        }
+        }
+    }
+  
 
     // On high-threat textures, shrink c-bet size and frequency with medium strength
     if (handStrength.strength >= 4 && handStrength.strength < 7 && threat >= 2.5) {
