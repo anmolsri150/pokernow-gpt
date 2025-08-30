@@ -57,9 +57,64 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
   private overCap = (pos:string)=>{ try{ const n=this.table.getNameFromId(this.game.getHero()!.getPlayerId());
     const s=this.table.getPlayerStatsFromName(n); return s.computeVPIPStat()>this.vpipCap(pos)+0.05; }catch{ return false; } };
   private coldCallOK = (pos:string,str:number,price:number)=> this.isLatePosition(pos)&&price>=3.5&&str>=5;
-  private bbDefendOK = (sizeBB:number,hand:string)=> sizeBB<=2.1?true:sizeBB<=2.6?!/(K9o|Q9o|J9o|T9o)/.test(hand):/s$/.test(hand)||/(AJo|KQo|KJo|QJo|TT\+)/.test(hand);
+  private bbDefendOK = (sizeBB:number,hand:string)=> {
+    if (sizeBB <= 2.1) return true;
+    if (sizeBB <= 2.6) return !/(K9o|Q9o|J9o|T9o)/.test(hand);
+    return /s$/.test(hand) || /(AJo|KQo|KJo|QJo|TT|JJ|QQ|KK|AA)/.test(hand);
+  };
   private spr = ()=>{ const h=this.game.getHero()!.getStackSize(); const p=Math.max(1,this.table.getPot()); return h/p; };
   
+// --- OPTIONAL EXPLOITS HELPERS ---
+
+// Detect open + >=1 caller before hero acts (simple squeeze spot detector)
+private isSqueezeSpot(): boolean {
+    try {
+      const acts = this.table.getPlayerActions();
+      let sawOpen = false, callers = 0;
+      for (const a of acts) {
+        const act = a.getAction();
+        if (act === 'raise') { sawOpen = true; }
+        else if (sawOpen && act === 'call') { callers++; }
+      }
+      return sawOpen && callers >= 1;
+    } catch { return false; }
+  }
+  
+  // Very small blocker check for squeeze bluffs
+  private hasSqueezeBlocker(handNotation: string): boolean {
+    // Axs wheels, KTs+, QTs+, JTs, KQo as a mix (position-dependent)
+    return /(A[2-5]s|KTs|KQs|QTs|QJs|JTs|KQo)/.test(handNotation);
+  }
+  
+  // Pull the likely villain (last aggressor) and tag them by stat buckets
+  private getPrimaryVillainTag(): 'station'|'nit'|'aggro'|'unknown' {
+    try {
+      const acts = this.table.getPlayerActions();
+      let name: string | undefined;
+      for (let i = acts.length - 1; i >= 0; i--) {
+        const a = acts[i];
+        if (a.getAction() === 'raise' || a.getAction() === 'bet') {
+          name = this.table.getNameFromId(a.getPlayerId());
+          break;
+        }
+      }
+      if (!name) return 'unknown';
+      const st = this.table.getPlayerStatsFromName(name);
+      const vpip = st.computeVPIPStat();   // 0..1
+      const pfr  = st.computePFRStat();    // 0..1
+      // If 3-bet stat exists, use it; otherwise infer from PFR
+      const t3b  = typeof (st as any).computeThreeBetStat === 'function'
+        ? (st as any).computeThreeBetStat()
+        : (pfr >= 0.20 ? 0.10 : 0.03);
+  
+      if (vpip >= 0.40 && pfr <= 0.12) return 'station';
+      if (vpip <= 0.18 && pfr <= 0.12) return 'nit';
+      if (t3b >= 0.09 || pfr >= 0.22)  return 'aggro';
+      return 'unknown';
+    } catch { return 'unknown'; }
+  }
+  
+
 
   /* -------------------- Preflop -------------------- */
 
@@ -125,6 +180,9 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
   private handlePreflopRaise(handStrength: HandStrength, raiseSize: number, position: string): StrategyDecision {
     const potOdds = this.calculatePotOdds(raiseSize);
   
+    if (raiseSize <= 0) {
+        return { action: "check", reasoning: "Invalid raise size detected — safe check", confidence: 0.9 };
+    }
     // BB defend sanity: overfold marginals to larger opens
     if (/bb/i.test(position)) {
       // If the open size is big, only continue with solid hands
@@ -136,6 +194,33 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
       }
     }
   
+    // Squeeze: open + >=1 caller → punish with bigger 3-bet
+    if (this.isSqueezeSpot()) {
+        // Value squeeze with strong hands
+        if (handStrength.strength >= 6) {
+        const ip = this.isLatePosition(position);
+        const size = Math.min((ip ? 4.0 : 5.0) * raiseSize, 12);
+        return {
+            action: "raise",
+            betSize: size,
+            reasoning: "Squeeze spot — linear value 3-bet",
+            confidence: 0.88
+        };
+        }
+        // Blocker-bluff squeeze (only IP, only with blockers)
+        if (this.isLatePosition(position) && handStrength.strength >= 4 && this.hasSqueezeBlocker(this.getHandNotation(this.game.getHero()!.getHand()))) {
+            const size = Math.min(4.0 * raiseSize, 10);
+            return {
+                action: "raise",
+                betSize: size,
+                reasoning: "Squeeze spot (IP) — blocker 3-bet bluff",
+                confidence: 0.72
+            };
+        }
+    }
+  
+
+    //raise for value
     if (handStrength.strength >= 8) {
       return {
         action: "raise",
@@ -253,7 +338,7 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
     const { hasOESD, hasGutshot } = this.hasStraightDraws(this.cardsToRankVals([...heroCards, ...board], true));
 
     // Made hands first
-    if (madeFlush && hasStraight) return { type: "straight_flush", description: "Straight flush", strength: 10 };
+    if (this.hasStraightFlush(allCards)) return { type: "straight_flush", description: "Straight flush", strength: 10 };
     if (this.hasNKind(allCards, 4)) return { type: "four_of_a_kind", description: "Four of a kind", strength: 10 };
     if (this.hasFullHouse(allCards)) return { type: "full_house", description: "Full house", strength: 9 };
     if (madeFlush) return { type: "flush", description: "Flush", strength: 8 };
@@ -278,6 +363,14 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
   private handlePostflopRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
     const lastRaise = this.getLastRaiseSize();
     const potOdds = this.calculatePotOdds(lastRaise);
+
+    if (lastRaise <= 0) {
+        // Treat as no actionable raise — default to value bet with strong, otherwise check/call logic
+        if (handStrength.strength >= 7) {
+          return { action: "raise", betSize: Math.min(potSize * 0.75, 10), reasoning: "Data guard: value line", confidence: 0.8 };
+        }
+        return { action: "call", betSize: 0, reasoning: "Data guard: treat as small probe; keep pot controlled", confidence: 0.7 };
+    }
   
     // Draws: call if the price meets the ratio
     if (handStrength.type.includes('draw') && handStrength.odds && potOdds >= handStrength.odds) {
@@ -298,28 +391,45 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
         confidence: 0.75
       };
     }
+
+    // Villain tag bias when facing aggression
+    const tag = this.getPrimaryVillainTag();
+
+    // Stations: go bigger for value, avoid thin bluffs (we already rarely bluff-raise here)
+
   
     // Strong made hands
     if (handStrength.strength >= 7) {
-      return {
+        // Stations pay bigger
+        const base = (tag === 'station') ? 1.0 : 0.75;
+        return {
         action: "raise",
-        betSize: Math.min(potSize * 0.75, 10),
-        reasoning: `Strong (${handStrength.description}) — raise for value`,
+        betSize: Math.min(potSize * base, 12),
+        reasoning: `Strong (${handStrength.description}) — raise for value${tag==='station'?' vs station (bigger)': ''}`,
         confidence: 0.9
-      };
+        };
     }
   
-    // Medium strength: in position call, OOP fold more
+  
+    // Medium strength: in position call, OOP fold more (except vs aggro)
     if (handStrength.strength >= 5) {
-      if (this.isLatePosition(position)) {
+        if (this.isLatePosition(position)) {
         return {
-          action: "call",
-          betSize: lastRaise,
-          reasoning: `Medium (${handStrength.description}) IP — call vs aggression`,
-          confidence: 0.7
+            action: "call",
+            betSize: lastRaise,
+            reasoning: `Medium (${handStrength.description}) IP — call vs aggression`,
+            confidence: 0.7
         };
-      }
-      return { action: "fold", reasoning: `Medium (${handStrength.description}) OOP — fold to raise`, confidence: 0.8 };
+        }
+        if (tag === 'aggro') {
+        return {
+            action: "call",
+            betSize: lastRaise,
+            reasoning: "Vs aggro: widen bluff-catch instead of folding medium strength OOP",
+            confidence: 0.68
+        };
+        }
+        return { action: "fold", reasoning: `Medium (${handStrength.description}) OOP — fold to raise`, confidence: 0.8 };
     }
   
     return { action: "fold", reasoning: `Weak — fold to aggression`, confidence: 0.9 };
@@ -329,6 +439,8 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
   private handlePostflopNoRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
     // Multiway discipline: no c-bet bluffs without equity/backdoors
     const pip = this.table.getPlayersInPot?.() ?? 2;
+    const tag = this.getPrimaryVillainTag();
+
     if (pip >= 3 && !handStrength.type.includes("draw") && handStrength.strength < 4) {
       return { action: "check", reasoning: "Multiway: skip air c-bet", confidence: 0.8 };
     }
@@ -337,14 +449,21 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
       return { action: "bet", betSize: potSize * 0.75, reasoning: `Strong — value bet`, confidence: 0.9 };
     }
     if (handStrength.type.includes('draw') && (handStrength.outs ?? 0) >= 8) {
-      return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw (${handStrength.description}) — semi-bluff`, confidence: 0.75 };
+        // vs stations: only semi-bluff the strongest draws (≥12 outs), otherwise realize equity
+        if (tag === 'station' && (handStrength.outs ?? 0) < 12) {
+          return { action: "check", reasoning: "Station: realize equity with weaker draws; bet stronger combos only", confidence: 0.76 };
+        }
+        return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw (${handStrength.description}) — semi-bluff`, confidence: 0.75 };
     }
+      
     if (handStrength.strength >= 4) {
-      if (this.isLatePosition(position)) {
-        return { action: "bet", betSize: potSize * 0.5, reasoning: `Medium IP — deny equity / thin value`, confidence: 0.6 };
-      }
-      return { action: "check", reasoning: `Medium OOP — pot control`, confidence: 0.7 };
+        if (this.isLatePosition(position)) {
+          const size = (tag === 'nit') ? (potSize * 0.55) : (potSize * 0.5);
+          return { action: "bet", betSize: size, reasoning: `Medium IP — thin value/deny${tag==='nit'?' vs nit':''}`, confidence: 0.62 };
+        }
+        return { action: "check", reasoning: `Medium OOP — pot control`, confidence: 0.7 };
     }
+      
     return { action: "check", reasoning: `Weak — check/fold`, confidence: 0.8 };
   }
   
@@ -404,10 +523,26 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
   }
 
   private hasStraight(vals: number[]): boolean {
-    const arr = this.cardsToRankVals(vals.map(v => this.rev(v))); // not needed; using vals directly
     return this.maxConsecutive(vals, true) >= 5;
   }
 
+    // Add this helper:
+    private hasStraightFlush(cards: string[]): boolean {
+        // group by suit, check straight within that suit
+        const bySuit: Record<string, string[]> = {};
+        for (const c of cards) {
+        const s = c[c.length - 1];
+        (bySuit[s] ||= []).push(c);
+        }
+        for (const suit of Object.keys(bySuit)) {
+        if (bySuit[suit].length >= 5) {
+            const ranks = this.cardsToRankVals(bySuit[suit], true);
+            if (this.maxConsecutive(ranks, true) >= 5) return true;
+        }
+        }
+        return false;
+    }
+  
   private hasStraightDraws(vals: number[]): { hasOESD: boolean; hasGutshot: boolean } {
     const longest = this.maxConsecutive(vals, true);
     const hasOESD = longest === 4; // four in a row
