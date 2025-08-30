@@ -31,9 +31,12 @@ export class StrategyEngine {
 
   // trash hands that should NEVER raise/iso; overfold vs opens if needed
   private static HARD_BLOCKLIST_NO_RAISE = new Set([
+    // offsuit 2x (already great)
     "32o","42o","52o","62o","72o","82o","92o","T2o","J2o","Q2o","K2o",
-    "32s","42s","52s","62s"
+    // suited 2x — finish the sweep
+    "32s","42s","52s","62s","72s","82s","92s","T2s","J2s","Q2s","K2s"
   ]);
+  
 
   constructor(game: Game) {
     this.game = game;
@@ -56,7 +59,17 @@ private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
     return (p.startsWith('utg')||p==='ep'||p==='lojack')?0.15:(p==='hijack'||p==='mp')?0.20:(p==='cutoff')?0.28:(p==='button')?0.40:(p==='sb')?0.18:0.22; };
   private overCap = (pos:string)=>{ try{ const n=this.table.getNameFromId(this.game.getHero()!.getPlayerId());
     const s=this.table.getPlayerStatsFromName(n); return s.computeVPIPStat()>this.vpipCap(pos)+0.05; }catch{ return false; } };
-  private coldCallOK = (pos:string,str:number,price:number)=> this.isLatePosition(pos)&&price>=3.5&&str>=5;
+    private coldCallOK = (pos: string, str: number, price: number) => {
+        // Late position only
+        if (!this.isLatePosition(pos)) return false;
+        // Strong/Playable (str>=5) includes small/mid pairs + suited broadways.
+        // Give pocket pairs a higher price requirement than broadways.
+        const hand = this.getHandNotation(this.game.getHero()!.getHand());
+        const isPocketPair = /^([2-9TJQKA])\1[so]$/.test(hand);
+        const need = isPocketPair ? 5.5 : 3.5;   // pairs want a better price IP
+        return str >= 5 && price >= need;
+      };
+      
   private bbDefendOK = (sizeBB:number,hand:string)=> {
     if (sizeBB <= 2.1) return true;
     if (sizeBB <= 2.6) return !/(K9o|Q9o|J9o|T9o)/.test(hand);
@@ -114,7 +127,71 @@ private isSqueezeSpot(): boolean {
     } catch { return 'unknown'; }
   }
   
-
+// replace your boardTextureFlags with this richer version
+private boardTextureFlags(): { 
+    paired: boolean; 
+    fourFlush: boolean; 
+    monoFlush: boolean;    // 3+ to a suit on board
+    fourStraight: boolean; // 4 in a row on board
+    straightOnBoard: boolean; // 5 in a row on board
+    flushOnBoard: boolean; // 5 to a suit on board
+  } {
+    const board = this.parseCommunityCards(this.table.getRunout());
+    if (!board.length) return { paired:false, fourFlush:false, monoFlush:false, fourStraight:false, straightOnBoard:false, flushOnBoard:false };
+  
+    // Pairing
+    const rankCounts: Record<string, number> = {};
+    for (const c of board) { const r = c[0]; rankCounts[r] = (rankCounts[r]||0)+1; }
+    const paired = Object.values(rankCounts).some(v => v >= 2);
+  
+    // Suits
+    const suitCounts: Record<string, number> = {};
+    for (const c of board) { const s = c[c.length-1]; suitCounts[s] = (suitCounts[s]||0)+1; }
+    const maxSuit = Math.max(...Object.values(suitCounts));
+    const monoFlush = maxSuit >= 3;
+    const fourFlush = maxSuit >= 4;
+    const flushOnBoard = maxSuit >= 5;
+  
+    // Straights on board
+    const vals = this.cardsToRankVals(board, true);
+    const longest = this.maxConsecutive(vals, true);
+    const fourStraight = longest >= 4;
+    const straightOnBoard = longest >= 5;
+  
+    return { paired, fourFlush, monoFlush, fourStraight, straightOnBoard, flushOnBoard };
+  }
+  
+  private boardThreatScore(): number {
+    const pip = this.table.getPlayersInPot?.() ?? 2;
+    const tag = this.getPrimaryVillainTag();
+    const tex = this.boardTextureFlags();
+  
+    let s = 0;
+    if (pip >= 3) s += 1;                // multiway => more combos live
+    if (tex.paired) s += 0.5;            // boats possible / counterfeit risk
+    if (tex.monoFlush) s += 1;           // monotone boards give lots of flushes/FDs
+    if (tex.fourFlush) s += 1.5;         // someone already there often
+    if (tex.fourStraight) s += 1;        // many straights available
+    if (tex.straightOnBoard) s += 1.5;   // chop/2nd-best danger
+    if (tex.flushOnBoard) s += 1.5;
+  
+    // population tweaks: stations = more calls with suited junk; aggro = more semibluffs (reduces "already has it" a bit)
+    if (tag === 'station') s += 0.3;
+    if (tag === 'aggro')   s -= 0.2;
+  
+    return s; // ~0..6
+  }
+  
+  
+  private hasNutBlockerForFlushDraw(hero: string[]): boolean {
+    // crude: holding the ace of the board’s dominant suit
+    const board = this.parseCommunityCards(this.table.getRunout());
+    const suitCounts: Record<string, number> = {};
+    for (const c of board) { const s = c[c.length-1]; suitCounts[s] = (suitCounts[s]||0)+1; }
+    const domSuit = Object.entries(suitCounts).sort((a,b)=>b[1]-a[1])[0]?.[0];
+    return !!domSuit && hero.some(c => c[0]==='A' && c[c.length-1]===domSuit);
+  }
+  
 
   /* -------------------- Preflop -------------------- */
 
@@ -396,7 +473,24 @@ private isSqueezeSpot(): boolean {
     const tag = this.getPrimaryVillainTag();
 
     // Stations: go bigger for value, avoid thin bluffs (we already rarely bluff-raise here)
+    const threat = this.boardThreatScore();
 
+    // If threat is high, downgrade thin value / marginal continues
+    if (threat >= 2.5) {
+        // one-pair at high threat: prefer fold OOP, call IP only with strong kickers/backdoors
+        if (handStrength.type === "one_pair") {
+        if (this.isLatePosition(position)) {
+            return { action:"call", betSize:lastRaise, reasoning:"High-threat board — keep one pair to call IP, avoid raises", confidence:0.7 };
+        }
+        return { action:"fold", reasoning:"High-threat board OOP — overfold one-pair to aggression", confidence:0.8 };
+        }
+    
+        // non-nut flush / weak straights: avoid reraising; prefer call/fold based on SPR
+        if (handStrength.strength >= 7) {
+        // made straight/flush but not nut? nudge to call more
+        return { action:"call", betSize:lastRaise, reasoning:"High-threat board — control with non-nut strong hand", confidence:0.72 };
+        }
+    }
   
     // Strong made hands
     if (handStrength.strength >= 7) {
@@ -441,6 +535,22 @@ private isSqueezeSpot(): boolean {
     const pip = this.table.getPlayersInPot?.() ?? 2;
     const tag = this.getPrimaryVillainTag();
 
+    const threat = this.boardThreatScore();
+
+    // On high-threat textures, shrink c-bet size and frequency with medium strength
+    if (handStrength.strength >= 4 && handStrength.strength < 7 && threat >= 2.5) {
+      if (this.isLatePosition(position)) {
+        return { action:"bet", betSize: potSize * 0.33, reasoning:"High-threat board — smaller stab with medium strength", confidence:0.6 };
+      }
+      return { action:"check", reasoning:"High-threat board OOP — pot control with medium strength", confidence:0.7 };
+    }
+    
+    // Non-nut made hands on very high-threat boards: prefer check rather than build a pot
+    if (handStrength.strength >= 7 && threat >= 3.5) {
+      return { action:"bet", betSize: potSize * 0.5, reasoning:"Value, but cap size on scary texture", confidence:0.7 };
+    }
+    
+
     if (pip >= 3 && !handStrength.type.includes("draw") && handStrength.strength < 4) {
       return { action: "check", reasoning: "Multiway: skip air c-bet", confidence: 0.8 };
     }
@@ -448,13 +558,24 @@ private isSqueezeSpot(): boolean {
     if (handStrength.strength >= 7) {
       return { action: "bet", betSize: potSize * 0.75, reasoning: `Strong — value bet`, confidence: 0.9 };
     }
+    const tex = this.boardTextureFlags();
+
     if (handStrength.type.includes('draw') && (handStrength.outs ?? 0) >= 8) {
-        // vs stations: only semi-bluff the strongest draws (≥12 outs), otherwise realize equity
+        // Station rule stays
         if (tag === 'station' && (handStrength.outs ?? 0) < 12) {
           return { action: "check", reasoning: "Station: realize equity with weaker draws; bet stronger combos only", confidence: 0.76 };
         }
-        return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw (${handStrength.description}) — semi-bluff`, confidence: 0.75 };
-    }
+        // Board rule: avoid semibluffing non-nut draws on paired/4-flush boards
+        const heroCards = this.game.getHero()!.getHand();
+        const okToBlast =
+          (!tex.paired && !tex.fourFlush) ||
+          this.hasNutBlockerForFlushDraw(heroCards) ||
+          (handStrength.outs ?? 0) >= 12; // combo draws
+        if (!okToBlast) {
+          return { action: "check", reasoning: "Paired/4-flush board — avoid semibluffing non-nut draws", confidence: 0.78 };
+        }
+        return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw — semi-bluff`, confidence: 0.75 };
+      }
       
     if (handStrength.strength >= 4) {
         if (this.isLatePosition(position)) {
