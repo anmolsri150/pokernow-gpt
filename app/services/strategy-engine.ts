@@ -904,7 +904,7 @@ private shouldJamLowSPR(h: HandStrength): boolean {
   }
 
   private getDefaultDecision(): StrategyDecision {
-    return { action: "fold", reasoning: "No hero info — fold", confidence: 0.5 };
+    return { action: "check", reasoning: "No hero info — fold", confidence: 0.5 };
   }
 
   // helper for hasStraight (not used after refactor but kept minimal)
