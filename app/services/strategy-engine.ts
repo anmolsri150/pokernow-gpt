@@ -182,6 +182,28 @@ private boardTextureFlags(): {
     return s; // ~0..6
   }
   
+  private isNutFlush(hero: string[], board: string[]): boolean {
+    const suits = [...board, ...hero].map(c => c[c.length-1]);
+    const suitCounts: Record<string, number> = {};
+    for (const s of suits) suitCounts[s] = (suitCounts[s]||0)+1;
+    const dom = Object.entries(suitCounts).sort((a,b)=>b[1]-a[1])[0]?.[0];
+    if (!dom) return false;
+    // Need 5 to a suit and hero holds the Ace of that suit
+    const boardSuitCount = board.filter(c => c[c.length-1]===dom).length;
+    const heroHasAce = hero.some(c => c[0]==='A' && c[c.length-1]===dom);
+    return boardSuitCount + hero.filter(c => c[c.length-1]===dom).length >= 5 && heroHasAce;
+  }
+  
+  private isNutStraight(hero: string[], board: string[]): boolean {
+    const vals = this.cardsToRankVals([...board, ...hero], true);
+    const longest = this.maxConsecutive(vals, true) >= 5;
+    if (!longest) return false;
+    // crude: if top of the straight is A/K and hero holds one of those ranks, treat as near-nut
+    const set = new Set(vals);
+    const hasBroadway = [10,11,12,13,14].every(v => set.has(v));
+    const heroVals = new Set(this.cardsToRankVals(hero, true));
+    return hasBroadway && (heroVals.has(14) || heroVals.has(13));
+  }
   
   private hasNutBlockerForFlushDraw(hero: string[]): boolean {
     // crude: holding the ace of the board’s dominant suit
@@ -474,9 +496,12 @@ private boardTextureFlags(): {
 
     // Stations: go bigger for value, avoid thin bluffs (we already rarely bluff-raise here)
     const threat = this.boardThreatScore();
-
+    const board = this.parseCommunityCards(this.table.getRunout());
+    const heroCards = this.game.getHero()!.getHand();
+    const haveNut = this.isNutFlush(heroCards, board) || this.isNutStraight(heroCards, board);
+    
     // If threat is high, downgrade thin value / marginal continues
-    if (threat >= 2.5) {
+    if (threat >= 2.5 && !haveNut) {
         // one-pair at high threat: prefer fold OOP, call IP only with strong kickers/backdoors
         if (handStrength.type === "one_pair") {
         if (this.isLatePosition(position)) {
