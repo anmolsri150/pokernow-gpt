@@ -1,105 +1,170 @@
 {
-    "version": "1.2",
-    "provider": "Ollama",
-    "model_name": "llama3.1:8b",
-    "playstyle": "winning",
-    "strategy_rules": {
-      "preflop_rules": {
-        "open_ranges": {
-          "UTG": ["AA-99","AKs-AQs","AKo","AJs","KQs"],
-          "HJ": ["AA-88","AKs-ATs","KQs-KJs","QJs","AKo-AQo","AJo","TT-99 (mix)"],
-          "CO": ["AA-77","AKs-A8s","KQs-KTs","QJs-QTs","JTs","T9s","AQo-AJo","KQo"],
-          "BTN": ["22+","A2s+","K9s+","Q9s+","J9s+","T8s+","98s-54s","AJo+","KJo+","QJo"],
-          "SB": ["No open-limping; 3-bet linear vs steals; complete multiway only with proper odds"],
-          "BB": ["Defend vs size; 3-bet linear vs small opens, polar vs LP"]
-        },
-        "three_bet": {
-          "vs_EP": { "value": ["QQ+","AK"], "bluff": ["A5s-A4s"] },
-          "vs_LP": { "value": ["JJ+","AK"], "bluff": ["A5s-A2s","KTs-K9s","QTs","J9s (mix)"] }
-        },
-        "four_bet": {
-          "value": ["KK+","AKs","AKo (mix vs LP)"],
-          "bluff": ["A5s-A4s (mix)"]
-        },
-        "vs_limp": {
-          "iso_sizes": { "IP": "4-5BB + 1BB/limper", "OOP": "5-6BB + 1BB/limper" },
-          "iso_range": { "tight_multiway": true }
-        },
-        "stack_depth": {
-          "short_≤50bb": "Widen value 3-bets; reduce speculative flats; push premium edges",
-          "medium_50-100bb": "Standard; balanced value/bluff",
-          "deep_≥100bb": "Add suited connectors/gappers IP; prefer calls over 4-bets; more postflop play"
-        }
+  "version": "1.3",
+  "provider": "Ollama",
+  "model_name": "llama3.1:8b",
+  "playstyle": "winning",
+  "strategy_rules": {
+    "preflop_rules": {
+      "open_ranges": {
+        "UTG": ["AA-99","AKs-AQs","AKo","AJs","KQs"],
+        "HJ": ["AA-88","AKs-ATs","KQs-KJs","QJs","AKo-AQo","AJo","TT-99 (mix)"],
+        "CO": ["AA-77","AKs-A8s","KQs-KTs","QJs-QTs","JTs","T9s","AQo-AJo","KQo"],
+        "BTN": ["22+","A2s+","K9s+","Q9s+","J9s+","T8s+","98s-54s","AJo+","KJo+","QJo"],
+        "SB": ["No open-limping; raise linear vs steals; complete only with playable suited/paired hands at good price"],
+        "BB": ["Defend vs size; 3-bet linear vs small opens, polar vs LP"]
       },
-      "postflop_rules": {
-        "sizing": {
-          "dry_ace_high": "0.33 pot high frequency",
-          "wet_connected": "0.6-0.75 pot polarized",
-          "turn_barrel_with_equity": "≈0.6 pot when equity+fold equity adequate"
-        },
-        "multiway": { "cbet_less": true, "value_thicker": true, "bluff_less": true, "apply_when_players_≥3": true },
-        "draws": {
-          "use_rule_of_2_and_4": true,
-          "discount_dirty_outs": true,
-          "raise_combo_draws": true,
-          "do_not_fold_strong_draws": {
-            "criteria": [
-              "Nut flush draw",
-              "OESD + overcards",
-              "12+ outs (e.g., NFD + OESD, pair+FD)",
-              "Combo draws with nut blockers"
-            ],
-            "policy": "Call or semi-bluff raise unless equity < min_required_equity(size) or SPR < 1 causing commits vs stronger ranges"
-          },
-          "min_required_equity": {
-            "by_size": { "0.33": 0.25, "0.5": 0.333, "0.75": 0.43, "1.0": 0.5 }
-          },
-          "paired_or_4flush_boards": "Be cautious semi-bluffing non-nut draws"
-        },
-        "rivers": {
-          "bluff_ratio_by_size": { "0.33": 0.2, "0.5": 0.33, "0.75": 0.43, "1.0": 1.0 },
-          "use_blockers": true,
-          "thin_value_vs_stations": true,
-          "fold_more_on_scary_runouts": true
-        },
-        "made_hands": {
-          "top_pair_plus": { "action": "value_bet", "size": "0.5-0.75 pot" },
-          "second_pair": { "action": "check_call", "note": "Fold to big aggression on scary boards" },
-          "bottom_pair": { "action": "check_fold", "note": "Occasional bluff-catch with strong blockers only" }
-        },
-        "first_hand_rules": {
-          "never_fold_unless": ">3BB bet (5/10) or >2BB bet (10/20) AND hand_strength weak",
-          "establish_presence": "Play first hand to establish table presence",
-          "safety": "Avoid entering large multiway pots OOP with trash; prefer suited/broadway/connectors if calling"
-        }
+
+      "hard_blocklist": {
+        "no_raise_with": [
+          "32o","42o","52o","62o","72o","82o","92o","T2o","J2o","Q2o","K2o",
+          "32s","42s","52s","62s"
+        ],
+        "notes": "Never open/3-bet/iso these. If facing min-open in BB, you may overfold these instead of defending."
       },
-      "position_strategy": {
-        "early_position": { "tight_range": true, "raise_size": "2.5-3BB", "fold_to_3bet": "vs tight" },
-        "middle_position": { "moderate_range": true, "raise_size": "2.5-3BB" },
-        "late_position": { "wide_range": true, "raise_size": "2.5-3BB" },
-        "blinds": { "defend_vs_size": true, "3bet_linear_vs_steal": true }
+
+      "three_bet": {
+        "vs_EP": { "value": ["QQ+","AK"], "bluff": ["A5s-A4s (mix)"] },
+        "vs_LP": { "value": ["JJ+","AK"], "bluff": ["A5s-A2s (mix)","KTs-K9s (mix)"] }
       },
-      "betting_strategy": {
-        "value_betting": { "strong": "0.75 pot", "medium": "0.5 pot", "thin": "0.33 pot" },
-        "bluffing": { "river_uses_ratio_by_size": true, "turn_bluffs_require_equity": true },
-        "pot_odds": { "equity_call_rule": "call if equity >= cost/(pot+cost)" },
-        "max_bet_safety": "25BB default cap — EXCEPT allow shoves with nutted hands or when SPR ≤ 1.5",
-        "stack_management": "50-100BB optimal range for 5/10 and 10/20 games"
+
+      "four_bet": {
+        "value": ["KK+","AKs","AKo (mix vs LP)"],
+        "bluff": ["A5s-A4s (low freq)"]
       },
-      "exploits": {
-        "vs_overfolders": { "bluff_more": true, "use_smaller_sizes": true },
-        "vs_calling_stations": { "bluff_less": true, "value_bet_thin": true },
-        "vs_agg_raisers": { "trap_more": true, "bluff_catch_with_blockers": true }
+
+      "vs_limp": {
+        "iso_sizes": { "IP": "3.5-4.5BB + 1BB/limper", "OOP": "4.5-5.5BB + 1BB/limper" },
+        "iso_allow": ["AJo+","ATs+","KQs-KTs","QJs-QTs","JTs","TT+","99 (mix)","A5s-A2s (IP mix)"],
+        "no_iso_with": ["A9o-","K9o-","Q9o-","J9o-","T9o","32s-65s (except BTN multiway cheap)"],
+        "tight_multiway": true
       },
-      "table_selection": {
-        "prefer_one_whale": true,
-        "sit_out_when_reg_heavy": true,
-        "session_bands": { "stop_loss_bb": 50, "stop_win_bb": 100 },
-        "buy_in_strategy": {
-          "5/10_blinds": { "buy_in": 500, "max_buy_in": 1000, "optimal_stack": "50-100BB" },
-          "10/20_blinds": { "buy_in": 1000, "max_buy_in": 2000, "optimal_stack": "50-100BB" }
-        }
+
+      "stack_depth": {
+        "short_≤50bb": "Value heavy; cut speculative flats and 3-bet bluffs",
+        "medium_50-100bb": "Standard; balanced",
+        "deep_≥100bb": "Add suited connectors/gappers IP; prefer calls > 4-bets with playable hands"
+      },
+
+      "vpip_targets": {
+        "UTG": "12-15%",
+        "HJ": "16-20%",
+        "CO": "22-28%",
+        "BTN": "35-45%",
+        "SB_open": "12-18%",
+        "SB_complete": "20-28%",
+        "enforce_vpip": true
+      },
+      "cold_call_policy": {
+        "oop": "mostly 3-bet or fold; no flat with offsuit broadways",
+        "ip": "flat only with pairs, strong suited broadways if price >= 3.5:1"
+      },
+      "bb_defend_vs_size": {
+        "2.0x": "defend wide incl. suited gappers",
+        "2.5x": "drop offsuit trash; keep suited + broadways",
+        "3.0x+": "tighten to suited/broadways; 3-bet value/bluff"
+      },
+      "squeeze": {
+        "trigger": "open + >=1 caller",
+        "sizes": { "IP": "4x open", "OOP": "5x open" }
+      }
+    },
+
+    "postflop_rules": {
+      "sizing": {
+        "dry_ace_high": "0.33 pot high frequency",
+        "wet_connected": "0.6-0.75 pot polarized",
+        "turn_barrel_with_equity": "≈0.6 pot when equity+fold equity adequate"
+      },
+
+      "multiway": {
+        "apply_when_players_≥3": true,
+        "cbet_less": true,
+        "value_thicker": true,
+        "bluff_less": true
+      },
+
+      "draws": {
+        "use_rule_of_2_and_4": true,
+        "discount_dirty_outs": true,
+        "raise_combo_draws": true,
+        "do_not_fold_strong_draws": {
+          "criteria": [
+            "Nut flush draw",
+            "OESD + overcards",
+            "≥8 clean outs (e.g., NFD+BDSD+overcard, pair+FD)",
+            "Combo draws with nut blockers"
+          ],
+          "policy": "Call or semi-bluff raise unless equity < min_required_equity(size) or SPR << 1 causing dominated commits"
+        },
+        "min_required_equity": {
+          "by_size": { "0.33": 0.25, "0.5": 0.333, "0.75": 0.43, "1.0": 0.5 }
+        },
+        "paired_or_4flush_boards": "Reduce bluffing; prioritize nut draws only"
+      },
+
+      "rivers": {
+        "bluff_ratio_by_size": { "0.33": 0.2, "0.5": 0.33, "0.75": 0.43, "1.0": 1.0 },
+        "use_blockers": true,
+        "thin_value_vs_stations": true,
+        "fold_more_on_scary_runouts": true
+      },
+
+      "made_hands": {
+        "top_pair_plus": { "action": "value_bet", "size": "0.5-0.75 pot" },
+        "second_pair": { "action": "check_call", "note": "Fold to big aggression on scary boards" },
+        "bottom_pair": { "action": "check_fold", "note": "Bluff-catch only with strong blockers vs maniacs" }
+      },
+
+      "first_hand_rules": {
+        "policy": "No heroics. Only play first hand if it’s inside your position open range or clearly +EV to call (price + position).",
+        "never_raise_with": ["any hand in hard_blocklist.no_raise_with","offsuit connectors below T9o","weak suited below 65s unless BTN multiway cheap"],
+        "fold_threshold": "If hand not in open range and facing raise > 2.5BB (10/20) or > 3.5BB (5/10), fold.",
+        "check_bias": "If unopened and you’re OOP with marginal hand, prefer check over stab."
+      },
+
+      "spr_stackoff": {
+        "tptk_overpair": "avoid stackoff when SPR > 4 unless villain is a whale or board safe"
+      },
+
+      "multiway_bluff_block": "no c-bet bluffs multiway without backdoor equity"
+    
+    },
+
+    "position_strategy": {
+      "early_position": { "tight_range": true, "raise_size": "2.5-3BB", "fold_to_3bet": "vs tight" },
+      "middle_position": { "moderate_range": true, "raise_size": "2.5-3BB" },
+      "late_position": { "wide_range": true, "raise_size": "2.2-2.7BB" },
+      "blinds": { "defend_vs_size": true, "3bet_linear_vs_steal": true }
+    },
+
+    "betting_strategy": {
+      "value_betting": { "strong": "0.75 pot", "medium": "0.5 pot", "thin": "0.33 pot" },
+      "bluffing": {
+        "river_uses_ratio_by_size": true,
+        "turn_bluffs_require_equity": "≥8 clean outs or strong blockers",
+        "no_backdoor_air": true
+      },
+      "pot_odds": { "equity_call_rule": "call if equity >= cost/(pot+cost)" },
+      "max_bet_safety": "25BB default cap — EXCEPT allow shoves with nutted hands or when SPR ≤ 1.5",
+      "stack_management": "50-100BB optimal range for 5/10 and 10/20 games"
+    },
+
+    "exploits": {
+      "vs_overfolders": { "bluff_more": true, "use_smaller_sizes": true },
+      "vs_calling_stations": { "bluff_less": true, "value_bet_thin": true },
+      "vs_agg_raisers": { "trap_more": true, "bluff_catch_with_blockers": true },
+      "villain_tags": ["station","nit","aggro"],
+      "bluff_scale": { "station": 0.5, "nit": 1.2, "aggro": 0.9 }
+    },
+
+    "table_selection": {
+      "prefer_one_whale": true,
+      "sit_out_when_reg_heavy": true,
+      "session_bands": { "stop_loss_bb": 50, "stop_win_bb": 100 },
+      "buy_in_strategy": {
+        "5/10_blinds": { "buy_in": 500, "max_buy_in": 1000, "optimal_stack": "50-100BB" },
+        "10/20_blinds": { "buy_in": 1000, "max_buy_in": 2000, "optimal_stack": "50-100BB" }
       }
     }
   }
-  
+}

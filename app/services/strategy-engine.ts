@@ -3,522 +3,545 @@ import { Table } from '../models/table.ts';
 import { BotAction } from '../interfaces/ai-client-interfaces.ts';
 
 export interface HandStrength {
-    type: string;
-    description: string;
-    strength: number;
-    outs?: number;
-    odds?: number;
+  type: string;
+  description: string;
+  strength: number;
+  outs?: number;
+  odds?: number; // pot-odds ratio threshold ~ (1/equity - 1)
 }
 
 export interface StrategyDecision {
-    action: string;
-    betSize?: number;
-    potFraction?: number;
-    reasoning: string;
-    confidence: number;
-    evBet?: number;
-    evCall?: number;
-    heroEquity?: number;
-    boardTags?: string[];
-    blockers?: string[];
-    villainArchetype?: string;
-    plan?: string;
+  action: string;
+  betSize?: number;       // in BBs
+  potFraction?: number;   // optional
+  reasoning: string;
+  confidence: number;
+  evBet?: number;
+  evCall?: number;
+  heroEquity?: number;
+  boardTags?: string[];
+  blockers?: string[];
+  villainArchetype?: string;
+  plan?: string;
 }
 
 export class StrategyEngine {
-    private game: Game;
-    private table: Table;
+  private game: Game;
+  private table: Table;
 
-    constructor(game: Game) {
-        this.game = game;
-        this.table = game.getTable();
+  // trash hands that should NEVER raise/iso; overfold vs opens if needed
+  private static HARD_BLOCKLIST_NO_RAISE = new Set([
+    "32o","42o","52o","62o","72o","82o","92o","T2o","J2o","Q2o","K2o",
+    "32s","42s","52s","62s"
+  ]);
+
+  constructor(game: Game) {
+    this.game = game;
+    this.table = game.getTable();
+  }
+
+  public getDecision(): StrategyDecision {
+    const street = this.table.getStreet();
+    const hero = this.game.getHero();
+    if (!hero) return this.getDefaultDecision();
+
+    if (!street || street === 'preflop') {
+      return this.getPreflopDecision();
+    }
+    return this.getPostflopDecision();
+  }
+
+// --- ADD: compact helpers ---
+private vpipCap = (pos:string)=>{ const p=pos.toLowerCase();
+    return (p.startsWith('utg')||p==='ep'||p==='lojack')?0.15:(p==='hijack'||p==='mp')?0.20:(p==='cutoff')?0.28:(p==='button')?0.40:(p==='sb')?0.18:0.22; };
+  private overCap = (pos:string)=>{ try{ const n=this.table.getNameFromId(this.game.getHero()!.getPlayerId());
+    const s=this.table.getPlayerStatsFromName(n); return s.computeVPIPStat()>this.vpipCap(pos)+0.05; }catch{ return false; } };
+  private coldCallOK = (pos:string,str:number,price:number)=> this.isLatePosition(pos)&&price>=3.5&&str>=5;
+  private bbDefendOK = (sizeBB:number,hand:string)=> sizeBB<=2.1?true:sizeBB<=2.6?!/(K9o|Q9o|J9o|T9o)/.test(hand):/s$/.test(hand)||/(AJo|KQo|KJo|QJo|TT\+)/.test(hand);
+  private spr = ()=>{ const h=this.game.getHero()!.getStackSize(); const p=Math.max(1,this.table.getPot()); return h/p; };
+  
+
+  /* -------------------- Preflop -------------------- */
+
+  private getPreflopDecision(): StrategyDecision {
+    const hero = this.game.getHero()!;
+    const heroCards = hero.getHand();
+    const position = this.table.getPlayerPositionFromId(hero.getPlayerId());
+    const playerActions = this.table.getPlayerActions();
+
+    const handNotation = this.getHandNotation(heroCards); // e.g., AKo, T9s
+    const handStrength = this.evaluatePreflopHand(handNotation, position);
+
+    // hard blocklist guard (prevents 32s/32o raising etc.)
+    if (StrategyEngine.HARD_BLOCKLIST_NO_RAISE.has(handNotation)) {
+      // Only overcall BB vs min-open with great price; otherwise fold
+      const hasRaises = playerActions.some(a => a.getAction() === 'raise' || a.getAction() === 'bet');
+      if (hasRaises) {
+        return { action: "fold", reasoning: `Trash hand (${handNotation}) in blocklist`, confidence: 0.95 };
+      }
+      // unopened: just fold rather than open trash
+      return { action: "fold", reasoning: `Trash hand (${handNotation}) in blocklist`, confidence: 0.95 };
     }
 
-    public getDecision(): StrategyDecision {
-        const street = this.table.getStreet();
-        const hero = this.game.getHero();
-        
-        if (!hero) {
-            return this.getDefaultDecision();
-        }
+    const hasRaises = playerActions.some(a => a.getAction() === 'raise' || a.getAction() === 'bet');
+    const lastRaiseSize = this.getLastRaiseSize();
 
-        if (!street || street === 'preflop') {
-            return this.getPreflopDecision();
-        } else {
-            return this.getPostflopDecision();
+    // BB defend sanity vs open size (overfold trash to big sizes)
+    if (hasRaises && /bb/i.test(position)) {
+        if (!this.bbDefendOK(lastRaiseSize, handNotation) && handStrength.strength < 7) {
+        return { action:"fold", reasoning:"BB vs large/open size — fold marginal/offsuit", confidence:0.85 };
         }
     }
+  
+    return hasRaises
+      ? this.handlePreflopRaise(handStrength, lastRaiseSize, position)
+      : this.handlePreflopNoRaise(handStrength, position);
+  }
 
-    private getPreflopDecision(): StrategyDecision {
-        const hero = this.game.getHero()!;
-        const heroCards = hero.getHand();
-        const position = this.table.getPlayerPositionFromId(hero.getPlayerId());
-        const potSize = this.table.getPot();
-        const playerActions = this.table.getPlayerActions();
-        
-        // Convert cards to hand notation (e.g., ["Ah", "Kd"] -> "AKo")
-        const handNotation = this.getHandNotation(heroCards);
-        const handStrength = this.evaluatePreflopHand(handNotation, position);
-        
-        // Check if there are any raises before us
-        const hasRaises = playerActions.some(action => action.getAction() === 'raise' || action.getAction() === 'bet');
-        const lastRaiseSize = this.getLastRaiseSize();
-        
-        if (hasRaises) {
-            return this.handlePreflopRaise(handStrength, lastRaiseSize, position);
-        } else {
-            return this.handlePreflopNoRaise(handStrength, position);
-        }
+  private evaluatePreflopHand(handNotation: string, position: string): HandStrength {
+    // Tighter, safer buckets. No low trash connectors.
+    const premiumHands = ["AA","KK","QQ","JJ","AKs","AKo","AQs","AQo"];
+    const strongHands  = ["TT","99","88","AJs","ATs","KQs","KQo","KJs"];
+    const playableHands = ["77","66","55","A9s","A8s","A7s","KTs","QJs","QTs","JTs"];
+    // Position-only adds (late position IP only):
+    const positionHands = ["44","33","22","A6s","A5s","A4s","A3s","A2s","K9s","Q9s","J9s","T9s","98s","87s","76s","65s"];
+    const suitedConnectors = ["T9s","98s","87s","76s","65s"]; // 65s+ only
+    const broadwayOffsuit = ["AJo","ATo","KJo","KTo","QJo","QTo","JTo"];
+
+    if (premiumHands.includes(handNotation)) {
+      return { type: "premium", description: "Premium hand", strength: 9 };
+    } else if (strongHands.includes(handNotation)) {
+      return { type: "strong", description: "Strong hand", strength: 7 };
+    } else if (playableHands.includes(handNotation)) {
+      return { type: "playable", description: "Playable hand", strength: 5 };
+    } else if ((positionHands.includes(handNotation) || suitedConnectors.includes(handNotation)) && this.isLatePosition(position)) {
+      return { type: "position", description: "Playable in position", strength: 4 };
+    } else if (broadwayOffsuit.includes(handNotation) && this.isLatePosition(position)) {
+      return { type: "broadway_offsuit", description: "Broadway offsuit (IP mix)", strength: 3 };
     }
+    return { type: "weak", description: "Weak hand", strength: 1 };
+  }
 
-    private getPostflopDecision(): StrategyDecision {
-        const hero = this.game.getHero()!;
-        const heroCards = hero.getHand();
-        const communityCards = this.table.getRunout();
-        const position = this.table.getPlayerPositionFromId(hero.getPlayerId());
-        const potSize = this.table.getPot();
-        const playerActions = this.table.getPlayerActions();
-        
-        const handStrength = this.evaluatePostflopHand(heroCards, communityCards);
-        const hasRaises = playerActions.some(action => action.getAction() === 'raise' || action.getAction() === 'bet');
-        
-        if (hasRaises) {
-            return this.handlePostflopRaise(handStrength, position, potSize);
-        } else {
-            return this.handlePostflopNoRaise(handStrength, position, potSize);
-        }
+  private handlePreflopRaise(handStrength: HandStrength, raiseSize: number, position: string): StrategyDecision {
+    const potOdds = this.calculatePotOdds(raiseSize);
+  
+    // BB defend sanity: overfold marginals to larger opens
+    if (/bb/i.test(position)) {
+      // If the open size is big, only continue with solid hands
+      if (raiseSize >= 3.0 && handStrength.strength < 6) {
+        return { action: "fold", reasoning: "BB vs 3x+ open — fold marginals", confidence: 0.88 };
+      }
+      if (raiseSize >= 2.6 && handStrength.strength < 5) {
+        return { action: "fold", reasoning: "BB vs larger open — tighten defend", confidence: 0.86 };
+      }
     }
-
-    private evaluatePreflopHand(handNotation: string, position: string): HandStrength {
-        const premiumHands = ["AA", "KK", "QQ", "JJ", "AKs", "AKo", "AQs", "AQo"];
-        const strongHands = ["TT", "99", "88", "AJs", "ATs", "KQs", "KQo", "KJs"];
-        const playableHands = ["77", "66", "55", "A9s", "A8s", "A7s", "KTs", "QJs", "QTs", "JTs"];
-        const positionHands = ["44", "33", "22", "A6s", "A5s", "A4s", "A3s", "A2s", "K9s", "K8s", "Q9s", "J9s", "T9s", "98s", "87s", "76s", "65s", "54s"];
-        const suitedConnectors = ["T8s", "97s", "86s", "75s", "64s", "53s", "43s", "32s"];
-        const broadwayOffsuit = ["AJo", "ATo", "KJo", "KTo", "QJo", "QTo", "JTo"];
-
-        if (premiumHands.includes(handNotation)) {
-            return { type: "premium", description: "Premium hand", strength: 9 };
-        } else if (strongHands.includes(handNotation)) {
-            return { type: "strong", description: "Strong hand", strength: 7 };
-        } else if (playableHands.includes(handNotation)) {
-            return { type: "playable", description: "Playable hand", strength: 5 };
-        } else if (positionHands.includes(handNotation) && this.isLatePosition(position)) {
-            return { type: "position", description: "Position hand", strength: 4 };
-        } else if (suitedConnectors.includes(handNotation) && this.isLatePosition(position)) {
-            return { type: "suited_connector", description: "Suited connector", strength: 3 };
-        } else if (broadwayOffsuit.includes(handNotation) && this.isLatePosition(position)) {
-            return { type: "broadway_offsuit", description: "Broadway offsuit", strength: 2 };
-        } else {
-            return { type: "weak", description: "Weak hand", strength: 1 };
-        }
-    }
-
-    private evaluatePostflopHand(heroCards: string[], communityCards: string): HandStrength {
-        const allCards = [...heroCards, ...this.parseCommunityCards(communityCards)];
-        const handRank = this.rankHand(allCards);
-        const outs = this.calculateOuts(heroCards, communityCards);
-        
-        // Evaluate drawing hands
-        if (this.hasFlushDraw(heroCards, communityCards)) {
-            return {
-                type: "flush_draw",
-                description: "Flush draw",
-                strength: 6,
-                outs: outs.flushOuts,
-                odds: 4.22
-            };
-        }
-        
-        if (this.hasStraightDraw(heroCards, communityCards)) {
-            return {
-                type: "straight_draw",
-                description: "Open-ended straight draw",
-                strength: 5,
-                outs: outs.straightOuts,
-                odds: 4.88
-            };
-        }
-        
-        if (this.hasGutshotDraw(heroCards, communityCards)) {
-            return {
-                type: "gutshot_draw",
-                description: "Gutshot straight draw",
-                strength: 4,
-                outs: outs.gutshotOuts,
-                odds: 10.5
-            };
-        }
-        
-        // Evaluate made hands
-        switch (handRank) {
-            case 0: // Straight flush
-                return { type: "straight_flush", description: "Straight flush", strength: 10 };
-            case 1: // Four of a kind
-                return { type: "four_of_a_kind", description: "Four of a kind", strength: 10 };
-            case 2: // Full house
-                return { type: "full_house", description: "Full house", strength: 9 };
-            case 3: // Flush
-                return { type: "flush", description: "Flush", strength: 8 };
-            case 4: // Straight
-                return { type: "straight", description: "Straight", strength: 7 };
-            case 5: // Three of a kind
-                return { type: "three_of_a_kind", description: "Three of a kind", strength: 6 };
-            case 6: // Two pair
-                return { type: "two_pair", description: "Two pair", strength: 5 };
-            case 7: // One pair
-                return { type: "one_pair", description: "One pair", strength: 3 };
-            default: // High card
-                return { type: "high_card", description: "High card", strength: 1 };
-        }
-    }
-
-    private handlePreflopRaise(handStrength: HandStrength, raiseSize: number, position: string): StrategyDecision {
-        const potOdds = this.calculatePotOdds(raiseSize);
-        
-        if (handStrength.strength >= 8) {
-            // Premium hands - always raise or re-raise
-            return {
-                action: "raise",
-                betSize: Math.min(raiseSize * 2.5, 10),
-                reasoning: `Premium hand (${handStrength.description}) - raising for value`,
-                confidence: 0.95
-            };
-        } else if (handStrength.strength >= 6) {
-            // Strong hands - call or raise depending on position
-            if (this.isLatePosition(position)) {
-                return {
-                    action: "raise",
-                    betSize: Math.min(raiseSize * 2, 8),
-                    reasoning: `Strong hand (${handStrength.description}) in late position - raising`,
-                    confidence: 0.85
-                };
-            } else {
-                return {
-                    action: "call",
-                    betSize: raiseSize,
-                    reasoning: `Strong hand (${handStrength.description}) - calling`,
-                    confidence: 0.75
-                };
-            }
-        } else if (handStrength.strength >= 4 && potOdds > 3) {
-            // Playable hands with good pot odds
-            return {
-                action: "call",
-                betSize: raiseSize,
-                reasoning: `Playable hand (${handStrength.description}) with good pot odds`,
-                confidence: 0.65
-            };
-        } else {
-            return {
-                action: "fold",
-                reasoning: `Weak hand (${handStrength.description}) - folding`,
-                confidence: 0.9
-            };
-        }
-    }
-
-    private handlePreflopNoRaise(handStrength: HandStrength, position: string): StrategyDecision {
-        if (handStrength.strength >= 7) {
-            // Strong hands - always raise
-            const raiseSize = this.getPositionRaiseSize(position);
-            return {
-                action: "raise",
-                betSize: raiseSize,
-                reasoning: `Strong hand (${handStrength.description}) - raising for value`,
-                confidence: 0.9
-            };
-        } else if (handStrength.strength >= 5) {
-            // Playable hands - raise in late position
-            if (this.isLatePosition(position)) {
-                const raiseSize = this.getPositionRaiseSize(position);
-                return {
-                    action: "raise",
-                    betSize: raiseSize,
-                    reasoning: `Playable hand (${handStrength.description}) in late position - raising`,
-                    confidence: 0.75
-                };
-            } else {
-                return {
-                    action: "call",
-                    reasoning: `Playable hand (${handStrength.description}) - calling`,
-                    confidence: 0.6
-                };
-            }
-        } else if (handStrength.strength >= 3 && this.isLatePosition(position)) {
-            // Position hands in late position
-            const raiseSize = this.getPositionRaiseSize(position);
-            return {
-                action: "raise",
-                betSize: raiseSize,
-                reasoning: `Position hand (${handStrength.description}) in late position - raising`,
-                confidence: 0.6
-            };
-        } else {
-            return {
-                action: "fold",
-                reasoning: `Weak hand (${handStrength.description}) - folding`,
-                confidence: 0.8
-            };
-        }
-    }
-
-    private handlePostflopRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
-        const potOdds = this.calculatePotOdds(this.getLastRaiseSize());
-        
-        // Drawing hands with good odds
-        if (handStrength.type.includes('draw') && handStrength.odds && potOdds <= handStrength.odds) {
-            return {
-                action: "call",
-                betSize: this.getLastRaiseSize(),
-                reasoning: `Drawing hand (${handStrength.description}) with good pot odds (${potOdds}:1 vs ${handStrength.odds}:1)`,
-                confidence: 0.8
-            };
-        }
-        
-        // Strong made hands
-        if (handStrength.strength >= 7) {
-            return {
-                action: "raise",
-                betSize: Math.min(potSize * 0.75, 10),
-                reasoning: `Strong hand (${handStrength.description}) - raising for value`,
-                confidence: 0.9
-            };
-        }
-        
-        // Medium strength hands
-        if (handStrength.strength >= 5) {
-            if (this.isLatePosition(position)) {
-                return {
-                    action: "call",
-                    betSize: this.getLastRaiseSize(),
-                    reasoning: `Medium hand (${handStrength.description}) in late position - calling`,
-                    confidence: 0.7
-                };
-            } else {
-                return {
-                    action: "fold",
-                    reasoning: `Medium hand (${handStrength.description}) in early position - folding`,
-                    confidence: 0.8
-                };
-            }
-        }
-        
-        // Weak hands
+  
+    if (handStrength.strength >= 8) {
+      return {
+        action: "raise",
+        betSize: Math.min(raiseSize * 2.5, 10),
+        reasoning: `Premium (${handStrength.description}) — 3-betting for value`,
+        confidence: 0.95
+      };
+    } else if (handStrength.strength >= 6) {
+      if (this.isLatePosition(position)) {
         return {
-            action: "fold",
-            reasoning: `Weak hand (${handStrength.description}) - folding`,
-            confidence: 0.9
+          action: "raise",
+          betSize: Math.min(raiseSize * 2, 8),
+          reasoning: `Strong (${handStrength.description}) IP — 3-bet`,
+          confidence: 0.85
         };
-    }
-
-    private handlePostflopNoRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
-        // Strong hands - bet for value
-        if (handStrength.strength >= 7) {
-            return {
-                action: "bet",
-                betSize: potSize * 0.75,
-                reasoning: `Strong hand (${handStrength.description}) - betting for value`,
-                confidence: 0.9
-            };
-        }
-        
-        // Drawing hands - bet for protection and value
-        if (handStrength.type.includes('draw') && handStrength.outs && handStrength.outs >= 8) {
-            return {
-                action: "bet",
-                betSize: potSize * 0.5,
-                reasoning: `Drawing hand (${handStrength.description}) with ${handStrength.outs} outs - betting`,
-                confidence: 0.75
-            };
-        }
-        
-        // Medium hands - check-call or bet depending on position
-        if (handStrength.strength >= 4) {
-            if (this.isLatePosition(position)) {
-                return {
-                    action: "bet",
-                    betSize: potSize * 0.5,
-                    reasoning: `Medium hand (${handStrength.description}) in late position - betting`,
-                    confidence: 0.6
-                };
-            } else {
-                return {
-                    action: "check",
-                    reasoning: `Medium hand (${handStrength.description}) in early position - checking`,
-                    confidence: 0.7
-                };
-            }
-        }
-        
-        // Weak hands - check-fold
+      }
+      // OOP policy: no cold call with strong-but-not-premium; 3-bet or fold based on price
+      if (!this.coldCallOK(position, handStrength.strength, potOdds)) {
         return {
-            action: "check",
-            reasoning: `Weak hand (${handStrength.description}) - checking`,
-            confidence: 0.8
+          action: "raise",
+          betSize: Math.min(raiseSize * 2, 8),
+          reasoning: `Strong OOP — avoid cold-call; 3-bet or fold policy`,
+          confidence: 0.8
         };
+      }
+      return {
+        action: "call",
+        betSize: raiseSize,
+        reasoning: `Strong (${handStrength.description}) — calling with acceptable price`,
+        confidence: 0.75
+      };
+    } else if (handStrength.strength >= 4 && potOdds > 3) {
+      // Only allow calls when it satisfies cold-call policy (IP, good price, playable)
+      if (!this.coldCallOK(position, handStrength.strength, potOdds)) {
+        return { action: "fold", reasoning: "No cold call OOP / poor price — fold", confidence: 0.85 };
+      }
+      return {
+        action: "call",
+        betSize: raiseSize,
+        reasoning: `Playable (${handStrength.description}) with good price (pot odds ${potOdds.toFixed(2)}:1)`,
+        confidence: 0.65
+      };
     }
+    return { action: "fold", reasoning: `Weak — fold vs raise`, confidence: 0.9 };
+  }
+  
 
-    // Helper methods
-    private getHandNotation(cards: string[]): string {
-        if (cards.length !== 2) return "XX";
-        
-        const card1 = cards[0];
-        const card2 = cards[1];
-        
-        const rank1 = card1.charAt(0);
-        const rank2 = card2.charAt(0);
-        const suit1 = card1.charAt(1);
-        const suit2 = card2.charAt(1);
-        
-        const isSuited = suit1 === suit2;
-        const suffix = isSuited ? "s" : "o";
-        
-        // Sort ranks (A > K > Q > J > T > 9 > ...)
-        const rankOrder = { 'A': 14, 'K': 13, 'Q': 12, 'J': 11, 'T': 10, '9': 9, '8': 8, '7': 7, '6': 6, '5': 5, '4': 4, '3': 3, '2': 2 };
-        const rank1Value = rankOrder[rank1 as keyof typeof rankOrder] || parseInt(rank1);
-        const rank2Value = rankOrder[rank2 as keyof typeof rankOrder] || parseInt(rank2);
-        
-        const higherRank = rank1Value > rank2Value ? rank1 : rank2;
-        const lowerRank = rank1Value > rank2Value ? rank2 : rank1;
-        
-        return higherRank + lowerRank + suffix;
-    }
-
-    private parseCommunityCards(communityCards: string): string[] {
-        if (!communityCards) return [];
-        return communityCards.split(' ').filter(card => card.length === 2);
-    }
-
-    private rankHand(cards: string[]): number {
-        // Simplified hand ranking - in a real implementation, you'd use a proper poker hand evaluator
-        // This is a placeholder that returns basic rankings
-        const ranks = cards.map(card => card.charAt(0));
-        const suits = cards.map(card => card.charAt(1));
-        
-        // Check for flush
-        const flush = suits.every(suit => suit === suits[0]);
-        
-        // Check for straight (simplified)
-        const uniqueRanks = [...new Set(ranks)];
-        const straight = uniqueRanks.length >= 5;
-        
-        if (flush && straight) return 0; // Straight flush
-        if (this.hasFourOfAKind(ranks)) return 1; // Four of a kind
-        if (this.hasFullHouse(ranks)) return 2; // Full house
-        if (flush) return 3; // Flush
-        if (straight) return 4; // Straight
-        if (this.hasThreeOfAKind(ranks)) return 5; // Three of a kind
-        if (this.hasTwoPair(ranks)) return 6; // Two pair
-        if (this.hasOnePair(ranks)) return 7; // One pair
-        return 8; // High card
-    }
-
-    private hasFourOfAKind(ranks: string[]): boolean {
-        const rankCounts = this.getRankCounts(ranks);
-        return Object.values(rankCounts).some(count => count >= 4);
-    }
-
-    private hasFullHouse(ranks: string[]): boolean {
-        const rankCounts = this.getRankCounts(ranks);
-        const counts = Object.values(rankCounts);
-        return counts.includes(3) && counts.includes(2);
-    }
-
-    private hasThreeOfAKind(ranks: string[]): boolean {
-        const rankCounts = this.getRankCounts(ranks);
-        return Object.values(rankCounts).some(count => count >= 3);
-    }
-
-    private hasTwoPair(ranks: string[]): boolean {
-        const rankCounts = this.getRankCounts(ranks);
-        const pairs = Object.values(rankCounts).filter(count => count >= 2);
-        return pairs.length >= 2;
-    }
-
-    private hasOnePair(ranks: string[]): boolean {
-        const rankCounts = this.getRankCounts(ranks);
-        return Object.values(rankCounts).some(count => count >= 2);
-    }
-
-    private getRankCounts(ranks: string[]): { [key: string]: number } {
-        const counts: { [key: string]: number } = {};
-        ranks.forEach(rank => {
-            counts[rank] = (counts[rank] || 0) + 1;
-        });
-        return counts;
-    }
-
-    private calculateOuts(heroCards: string[], communityCards: string): { flushOuts: number, straightOuts: number, gutshotOuts: number } {
-        // Simplified outs calculation
-        const allCards = [...heroCards, ...this.parseCommunityCards(communityCards)];
-        const suits = allCards.map(card => card.charAt(1));
-        const ranks = allCards.map(card => card.charAt(0));
-        
-        // Flush outs
-        const suitCounts = this.getRankCounts(suits);
-        const flushOuts = Math.max(...Object.values(suitCounts)) >= 4 ? 9 : 0;
-        
-        // Straight outs (simplified)
-        const straightOuts = 8; // Placeholder
-        
-        // Gutshot outs (simplified)
-        const gutshotOuts = 4; // Placeholder
-        
-        return { flushOuts, straightOuts, gutshotOuts };
-    }
-
-    private hasFlushDraw(heroCards: string[], communityCards: string): boolean {
-        const allCards = [...heroCards, ...this.parseCommunityCards(communityCards)];
-        const suits = allCards.map(card => card.charAt(1));
-        const suitCounts = this.getRankCounts(suits);
-        return Math.max(...Object.values(suitCounts)) >= 4;
-    }
-
-    private hasStraightDraw(heroCards: string[], communityCards: string): boolean {
-        // Simplified straight draw detection
-        return true; // Placeholder
-    }
-
-    private hasGutshotDraw(heroCards: string[], communityCards: string): boolean {
-        // Simplified gutshot draw detection
-        return true; // Placeholder
-    }
-
-    private isLatePosition(position: string): boolean {
-        const latePositions = ['button', 'cutoff', 'hijack', 'blinds'];
-        return latePositions.includes(position.toLowerCase());
-    }
-
-    private getPositionRaiseSize(position: string): number {
-        // Optimized for 5/10 and 10/20 blind structures
-        // With 50-100BB stacks, standard sizing works well
-        if (position === 'early') return 3;
-        if (position === 'middle') return 2.5;
-        return 2.5; // late position
-    }
-
-    private calculatePotOdds(betSize: number): number {
-        const potSize = this.table.getPot();
-        return potSize / betSize;
-    }
-
-    private getLastRaiseSize(): number {
-        const actions = this.table.getPlayerActions();
-        for (let i = actions.length - 1; i >= 0; i--) {
-            const action = actions[i];
-                    if (action.getAction() === 'raise' || action.getAction() === 'bet') {
-            return action.getBetAmount() || 0;
+  private handlePreflopNoRaise(handStrength: HandStrength, position: string): StrategyDecision {
+    if (handStrength.strength >= 7) {
+      return {
+        action: "raise",
+        betSize: this.getPositionRaiseSize(position),
+        reasoning: `Strong (${handStrength.description}) — open for value`,
+        confidence: 0.9
+      };
+    } else if (handStrength.strength >= 5) {
+      if (this.isLatePosition(position)) {
+        // VPIP cap: if you're already loose for this seat, skip marginal opens
+        if (this.overCap(position)) {
+          return { action: "fold", reasoning: "Above VPIP cap for seat — tighten marginal opens", confidence: 0.85 };
         }
-        }
-        return 0;
-    }
-
-    private getDefaultDecision(): StrategyDecision {
         return {
-            action: "fold",
-            reasoning: "No hero information available - defaulting to fold",
-            confidence: 0.5
+          action: "raise",
+          betSize: this.getPositionRaiseSize(position),
+          reasoning: `Playable (${handStrength.description}) IP — open to steal`,
+          confidence: 0.75
         };
+      }
+      return { action: "fold", reasoning: `Playable but OOP/early — avoid marginal opens`, confidence: 0.7 };
+    } else if (handStrength.strength >= 3 && this.isLatePosition(position)) {
+      // VPIP cap gate for the lightest opens
+      if (this.overCap(position)) {
+        return { action: "fold", reasoning: "Above VPIP cap for seat — skip light opens", confidence: 0.85 };
+      }
+      return {
+        action: "raise",
+        betSize: this.getPositionRaiseSize(position),
+        reasoning: `IP mix open — but fold to aggression if dominated`,
+        confidence: 0.6
+      };
     }
+    return { action: "fold", reasoning: `Weak — fold`, confidence: 0.85 };
+  }
+  
+
+  /* -------------------- Postflop -------------------- */
+
+  private getPostflopDecision(): StrategyDecision {
+    const hero = this.game.getHero()!;
+    const heroCards = hero.getHand();
+    const communityCards = this.table.getRunout();
+    const position = this.table.getPlayerPositionFromId(hero.getPlayerId());
+    const potSize = this.table.getPot();
+    const playerActions = this.table.getPlayerActions();
+
+    const handStrength = this.evaluatePostflopHand(heroCards, communityCards);
+    const hasRaises = playerActions.some(a => a.getAction() === 'raise' || a.getAction() === 'bet');
+
+    return hasRaises
+      ? this.handlePostflopRaise(handStrength, position, potSize)
+      : this.handlePostflopNoRaise(handStrength, position, potSize);
+  }
+
+  private evaluatePostflopHand(heroCards: string[], communityCards: string): HandStrength {
+    const board = this.parseCommunityCards(communityCards);
+    const allCards = [...heroCards, ...board];
+
+    const flushCountMap = this.countSuits(allCards);
+    const maxSuitCount = Math.max(...Object.values(flushCountMap));
+    const madeFlush = maxSuitCount >= 5;
+    const flushDraw = maxSuitCount === 4;
+
+    const ranks = this.cardsToRankVals(allCards);
+    const hasStraight = this.hasStraight(ranks);
+    const { hasOESD, hasGutshot } = this.hasStraightDraws(this.cardsToRankVals([...heroCards, ...board], true));
+
+    // Made hands first
+    if (madeFlush && hasStraight) return { type: "straight_flush", description: "Straight flush", strength: 10 };
+    if (this.hasNKind(allCards, 4)) return { type: "four_of_a_kind", description: "Four of a kind", strength: 10 };
+    if (this.hasFullHouse(allCards)) return { type: "full_house", description: "Full house", strength: 9 };
+    if (madeFlush) return { type: "flush", description: "Flush", strength: 8 };
+    if (hasStraight) return { type: "straight", description: "Straight", strength: 7 };
+    if (this.hasNKind(allCards, 3)) return { type: "three_of_a_kind", description: "Trips", strength: 6 };
+    if (this.hasTwoPair(allCards)) return { type: "two_pair", description: "Two pair", strength: 5 };
+    if (this.hasPair(allCards)) return { type: "one_pair", description: "One pair", strength: 3 };
+
+    // Draws
+    if (flushDraw) {
+      return { type: "flush_draw", description: "Flush draw", strength: 6, outs: 9, odds: 4.3 };
+    }
+    if (hasOESD) {
+      return { type: "straight_draw", description: "Open-ended straight draw", strength: 5, outs: 8, odds: 4.9 };
+    }
+    if (hasGutshot) {
+      return { type: "gutshot_draw", description: "Gutshot straight draw", strength: 4, outs: 4, odds: 10.5 };
+    }
+    return { type: "high_card", description: "High card / no draw", strength: 1 };
+  }
+
+  private handlePostflopRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
+    const lastRaise = this.getLastRaiseSize();
+    const potOdds = this.calculatePotOdds(lastRaise);
+  
+    // Draws: call if the price meets the ratio
+    if (handStrength.type.includes('draw') && handStrength.odds && potOdds >= handStrength.odds) {
+      return {
+        action: "call",
+        betSize: lastRaise,
+        reasoning: `Draw (${handStrength.description}) — pot odds ${potOdds.toFixed(2)}:1 ≥ ${handStrength.odds}:1`,
+        confidence: 0.8
+      };
+    }
+  
+    // High SPR guard: avoid bloating the pot with one-pair hands
+    if (handStrength.type === "one_pair" && this.spr() > 4) {
+      return {
+        action: "call",
+        betSize: lastRaise,
+        reasoning: "TPTK/overpair at high SPR — pot control over raise",
+        confidence: 0.75
+      };
+    }
+  
+    // Strong made hands
+    if (handStrength.strength >= 7) {
+      return {
+        action: "raise",
+        betSize: Math.min(potSize * 0.75, 10),
+        reasoning: `Strong (${handStrength.description}) — raise for value`,
+        confidence: 0.9
+      };
+    }
+  
+    // Medium strength: in position call, OOP fold more
+    if (handStrength.strength >= 5) {
+      if (this.isLatePosition(position)) {
+        return {
+          action: "call",
+          betSize: lastRaise,
+          reasoning: `Medium (${handStrength.description}) IP — call vs aggression`,
+          confidence: 0.7
+        };
+      }
+      return { action: "fold", reasoning: `Medium (${handStrength.description}) OOP — fold to raise`, confidence: 0.8 };
+    }
+  
+    return { action: "fold", reasoning: `Weak — fold to aggression`, confidence: 0.9 };
+  }
+  
+
+  private handlePostflopNoRaise(handStrength: HandStrength, position: string, potSize: number): StrategyDecision {
+    // Multiway discipline: no c-bet bluffs without equity/backdoors
+    const pip = this.table.getPlayersInPot?.() ?? 2;
+    if (pip >= 3 && !handStrength.type.includes("draw") && handStrength.strength < 4) {
+      return { action: "check", reasoning: "Multiway: skip air c-bet", confidence: 0.8 };
+    }
+  
+    if (handStrength.strength >= 7) {
+      return { action: "bet", betSize: potSize * 0.75, reasoning: `Strong — value bet`, confidence: 0.9 };
+    }
+    if (handStrength.type.includes('draw') && (handStrength.outs ?? 0) >= 8) {
+      return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw (${handStrength.description}) — semi-bluff`, confidence: 0.75 };
+    }
+    if (handStrength.strength >= 4) {
+      if (this.isLatePosition(position)) {
+        return { action: "bet", betSize: potSize * 0.5, reasoning: `Medium IP — deny equity / thin value`, confidence: 0.6 };
+      }
+      return { action: "check", reasoning: `Medium OOP — pot control`, confidence: 0.7 };
+    }
+    return { action: "check", reasoning: `Weak — check/fold`, confidence: 0.8 };
+  }
+  
+  /* -------------------- Helpers -------------------- */
+
+  private getHandNotation(cards: string[]): string {
+    if (cards.length !== 2) return "XX";
+    const [r1, s1] = this.normalizeCard(cards[0]);
+    const [r2, s2] = this.normalizeCard(cards[1]);
+    const isSuited = s1 === s2;
+    const [hi, lo] = this.rankVal(r1) >= this.rankVal(r2) ? [r1, r2] : [r2, r1];
+    return `${hi}${lo}${isSuited ? "s" : "o"}`;
+  }
+
+  private parseCommunityCards(cc: string): string[] {
+    if (!cc) return [];
+    const re = /(?:10|T|[2-9]|[JQKA])[shdc]/g; // matches T or 10
+    const matches = cc.match(re);
+    return matches ? matches.map(c => this.toTwoChar(c)) : [];
+  }
+
+  private toTwoChar(card: string): string {
+    const rank = card.startsWith('10') ? 'T' : card[0];
+    const suit = card[card.length - 1];
+    return `${rank}${suit}`;
+  }
+
+  private normalizeCard(card: string): [string, string] {
+    const r = card[0] === '1' ? 'T' : card[0];
+    return [r, card[card.length - 1]];
+  }
+
+  private rankVal(r: string): number {
+    switch (r) {
+      case 'A': return 14;
+      case 'K': return 13;
+      case 'Q': return 12;
+      case 'J': return 11;
+      case 'T': return 10;
+      default: return parseInt(r, 10);
+    }
+  }
+
+  private countSuits(cards: string[]): Record<string, number> {
+    const counts: Record<string, number> = {};
+    for (const c of cards) {
+      const suit = c[c.length - 1];
+      counts[suit] = (counts[suit] || 0) + 1;
+    }
+    return counts;
+  }
+
+  private cardsToRankVals(cards: string[], addAceLow = false): number[] {
+    const vals = Array.from(new Set(cards.map(c => this.rankVal(c[0] === '1' ? 'T' : c[0])))).sort((a,b)=>a-b);
+    if (addAceLow && vals.includes(14) && !vals.includes(1)) vals.unshift(1); // A as 1 for A-5
+    return vals;
+  }
+
+  private hasStraight(vals: number[]): boolean {
+    const arr = this.cardsToRankVals(vals.map(v => this.rev(v))); // not needed; using vals directly
+    return this.maxConsecutive(vals, true) >= 5;
+  }
+
+  private hasStraightDraws(vals: number[]): { hasOESD: boolean; hasGutshot: boolean } {
+    const longest = this.maxConsecutive(vals, true);
+    const hasOESD = longest === 4; // four in a row
+    let hasGutshot = false;
+    // window-of-5 with exactly 4 ranks present (gap inside)
+    const set = new Set(vals);
+    for (let s = 1; s <= 10; s++) {
+      const window = [s, s+1, s+2, s+3, s+4];
+      const cnt = window.reduce((acc,v)=>acc + (set.has(v) ? 1 : 0), 0);
+      if (cnt === 4) { hasGutshot = true; break; }
+    }
+    return { hasOESD, hasGutshot: hasGutshot && !hasOESD };
+  }
+
+  private maxConsecutive(vals: number[], aceLow: boolean): number {
+    const set = new Set(vals);
+    if (aceLow && set.has(14)) set.add(1);
+    const sorted = Array.from(set).sort((a,b)=>a-b);
+    let best = 1, cur = 1;
+    for (let i=1; i<sorted.length; i++) {
+      if (sorted[i] === sorted[i-1] + 1) { cur++; best = Math.max(best, cur); }
+      else { cur = 1; }
+    }
+    return best;
+  }
+
+  private hasNKind(cards: string[], n: number): boolean {
+    const counts: Record<string, number> = {};
+    for (const c of cards) {
+      const r = c[0] === '1' ? 'T' : c[0];
+      counts[r] = (counts[r] || 0) + 1;
+    }
+    return Object.values(counts).some(c => c >= n);
+  }
+
+  private hasFullHouse(cards: string[]): boolean {
+    const counts: Record<string, number> = {};
+    for (const c of cards) {
+      const r = c[0] === '1' ? 'T' : c[0];
+      counts[r] = (counts[r] || 0) + 1;
+    }
+    const vals = Object.values(counts);
+    return vals.includes(3) && vals.filter(v => v >= 2).length >= 2;
+  }
+
+  private hasTwoPair(cards: string[]): boolean {
+    const counts: Record<string, number> = {};
+    for (const c of cards) {
+      const r = c[0] === '1' ? 'T' : c[0];
+      counts[r] = (counts[r] || 0) + 1;
+    }
+    return Object.values(counts).filter(v => v >= 2).length >= 2;
+    }
+
+  private hasPair(cards: string[]): boolean {
+    const counts: Record<string, number> = {};
+    for (const c of cards) {
+      const r = c[0] === '1' ? 'T' : c[0];
+      counts[r] = (counts[r] || 0) + 1;
+    }
+    return Object.values(counts).some(v => v >= 2);
+  }
+
+  private calculateOuts(heroCards: string[], communityCards: string): { flushOuts: number, straightOuts: number, gutshotOuts: number } {
+    const board = this.parseCommunityCards(communityCards);
+    const allCards = [...heroCards, ...board];
+    const flushCountMap = this.countSuits(allCards);
+    const maxSuit = Math.max(...Object.values(flushCountMap));
+    const flushOuts = maxSuit === 4 ? 9 : 0;
+
+    const vals = this.cardsToRankVals(allCards, true);
+    const { hasOESD, hasGutshot } = this.hasStraightDraws(vals);
+    const straightOuts = hasOESD ? 8 : 0;
+    const gutshotOuts = hasGutshot ? 4 : 0;
+
+    return { flushOuts, straightOuts, gutshotOuts };
+  }
+
+  private hasFlushDraw(heroCards: string[], communityCards: string): boolean {
+    const board = this.parseCommunityCards(communityCards);
+    const allCards = [...heroCards, ...board];
+    const flushCountMap = this.countSuits(allCards);
+    return Math.max(...Object.values(flushCountMap)) === 4;
+  }
+
+  private hasStraightDraw(heroCards: string[], communityCards: string): boolean {
+    const board = this.parseCommunityCards(communityCards);
+    const vals = this.cardsToRankVals([...heroCards, ...board], true);
+    return this.hasStraightDraws(vals).hasOESD;
+  }
+
+  private hasGutshotDraw(heroCards: string[], communityCards: string): boolean {
+    const board = this.parseCommunityCards(communityCards);
+    const vals = this.cardsToRankVals([...heroCards, ...board], true);
+    const d = this.hasStraightDraws(vals);
+    return d.hasGutshot && !d.hasOESD;
+  }
+
+  private isLatePosition(position: string): boolean {
+    const p = position.toLowerCase();
+    return p === 'button' || p === 'cutoff'; // blinds are NOT late position
+  }
+
+  private getPositionRaiseSize(position: string): number {
+    const p = position.toLowerCase();
+    if (p === 'utg' || p === 'ep' || p === 'lojack') return 3.0;
+    if (p === 'hijack' || p === 'mp') return 2.7;
+    if (p === 'button' || p === 'cutoff') return 2.5;
+    if (p === 'sb') return 3.2;
+    return 2.5;
+  }
+
+  private calculatePotOdds(betSize: number): number {
+    const potSize = Math.max(0, this.table.getPot());
+    if (betSize <= 0) return 0;
+    // returns ratio (pot:bet) ~ compare to odds thresholds
+    return potSize / betSize;
+  }
+
+  private getLastRaiseSize(): number {
+    const actions = this.table.getPlayerActions();
+    for (let i = actions.length - 1; i >= 0; i--) {
+      const a = actions[i];
+      if (a.getAction() === 'raise' || a.getAction() === 'bet') {
+        return a.getBetAmount() || 0;
+      }
+    }
+    return 0;
+  }
+
+  private getDefaultDecision(): StrategyDecision {
+    return { action: "fold", reasoning: "No hero info — fold", confidence: 0.5 };
+  }
+
+  // helper for hasStraight (not used after refactor but kept minimal)
+  private rev(v: number): number { return v; }
 }

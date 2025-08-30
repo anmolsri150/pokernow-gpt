@@ -5,7 +5,11 @@ export const playstyleToPrompt: Map<string, string> = new Map<string, string>([
     ["aggressive", "You are an experienced poker player who plays aggressively like a maniac. You bet and raise frequently to put pressure on opponents. Be aware that this style can be expensive if not executed properly."],
     ["passive", "You are an experienced poker player who plays passively like a nit. You only play premium hands and fold most marginal situations. You avoid calling with weak hands and prefer to fold when uncertain."],
     ["neutral", "You are an experienced poker player who plays strong ranges preflop, has a balanced playstyle, and makes disciplined decisions. You fold when you don't have a strong hand or proper odds. You avoid calling with weak hands and prefer to fold rather than call with marginal holdings. You only bet or raise when you have a strong hand or good drawing odds. Remember: when in doubt, fold. It's better to fold a marginal hand than to lose money calling with weak holdings."],
-    ["winning", "Hybrid poker strategy for 5/10 & 10/20 blinds (50-100BB stacks): Use strategy engine recommendations + situational awareness. Key: 1) Consider strategy rec carefully 2) Override if exploitative opportunities 3) Never fold first hand unless >3BB (5/10) or >2BB (10/20) bet + weak cards 4) Play premium/strong hands aggressively 5) Position hands late only 6) Drawing hands with good odds 7) Value bet strong, protection bet draws 8) Consider opponent tendencies. Optimized for 50-100BB stack depths."]
+    ["winning", "Hybrid poker for 5/10 & 10/20 (50–100BB): Follow strategy engine; when in doubt, FOLD. \
+ Only open/3-bet from the listed ranges. Never raise with trash (e.g., 32o, 42o, 52o; low suited like 32s/42s). \
+ First hand: no heroics—only play if in-range or clearly +EV to call. \
+ Value bet strong; semi-bluff only with ≥8 clean outs or nut draws; don’t c-bet air multiway. \
+ Respect position, pot odds, and opponent tendencies. Optimize for risk-adjusted EV, not hand count."]
 ]);
 
 export function getPromptFromPlaystyle(playstyle: string) {
