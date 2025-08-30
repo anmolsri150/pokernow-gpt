@@ -1,44 +1,60 @@
 {
-    "version": "1.1",
+    "version": "1.2",
     "provider": "Ollama",
     "model_name": "llama3.1:8b",
     "playstyle": "winning",
     "strategy_rules": {
       "preflop_rules": {
         "open_ranges": {
-          "UTG": ["AA-99", "AKs-AQs", "AKo", "AJs", "KQs"],
-          "HJ": ["AA-88", "AKs-ATs", "KQs-KJs", "QJs", "AKo-AQo", "AJo", "TT-99 (mix)"],
-          "CO": ["AA-77", "AKs-A8s", "KQs-KTs", "QJs-QTs", "JTs", "T9s", "AQo-AJo", "KQo"],
-          "BTN": ["22+", "A2s+", "K9s+", "Q9s+", "J9s+", "T8s+", "98s-54s", "AJo+", "KJo+", "QJo"],
-          "SB": ["Tight vs field; 3-bet linear vs steals; complete more multiway"],
+          "UTG": ["AA-99","AKs-AQs","AKo","AJs","KQs"],
+          "HJ": ["AA-88","AKs-ATs","KQs-KJs","QJs","AKo-AQo","AJo","TT-99 (mix)"],
+          "CO": ["AA-77","AKs-A8s","KQs-KTs","QJs-QTs","JTs","T9s","AQo-AJo","KQo"],
+          "BTN": ["22+","A2s+","K9s+","Q9s+","J9s+","T8s+","98s-54s","AJo+","KJo+","QJo"],
+          "SB": ["No open-limping; 3-bet linear vs steals; complete multiway only with proper odds"],
           "BB": ["Defend vs size; 3-bet linear vs small opens, polar vs LP"]
         },
         "three_bet": {
-          "vs_EP": { "value": ["QQ+", "AK"], "bluff": ["A5s-A4s"] },
-          "vs_LP": { "value": ["JJ+", "AK"], "bluff": ["A5s-A2s", "KTs-KQo", "QTs"] }
+          "vs_EP": { "value": ["QQ+","AK"], "bluff": ["A5s-A4s"] },
+          "vs_LP": { "value": ["JJ+","AK"], "bluff": ["A5s-A2s","KTs-K9s","QTs","J9s (mix)"] }
         },
-        "four_bet": { "value": ["KK+", "AKs"], "bluff": ["A5s-A4s (mix)"] },
+        "four_bet": {
+          "value": ["KK+","AKs","AKo (mix vs LP)"],
+          "bluff": ["A5s-A4s (mix)"]
+        },
         "vs_limp": {
-          "iso_sizes": { "IP": "3-4BB + 1BB/limper", "OOP": "4-5BB + 1BB/limper" },
+          "iso_sizes": { "IP": "4-5BB + 1BB/limper", "OOP": "5-6BB + 1BB/limper" },
           "iso_range": { "tight_multiway": true }
         },
         "stack_depth": {
-          "short_≤50bb": "Widen value 3-bets; reduce speculative flats; more aggressive with premium hands",
-          "medium_50-100bb": "Standard play; balanced value and bluff frequencies",
+          "short_≤50bb": "Widen value 3-bets; reduce speculative flats; push premium edges",
+          "medium_50-100bb": "Standard; balanced value/bluff",
           "deep_≥100bb": "Add suited connectors/gappers IP; prefer calls over 4-bets; more postflop play"
         }
       },
       "postflop_rules": {
         "sizing": {
-          "dry_ace_high": "0.5 pot high frequency",
+          "dry_ace_high": "0.33 pot high frequency",
           "wet_connected": "0.6-0.75 pot polarized",
           "turn_barrel_with_equity": "≈0.6 pot when equity+fold equity adequate"
         },
-        "multiway": { "cbet_less": true, "value_thicker": true, "bluff_less": true },
+        "multiway": { "cbet_less": true, "value_thicker": true, "bluff_less": true, "apply_when_players_≥3": true },
         "draws": {
           "use_rule_of_2_and_4": true,
           "discount_dirty_outs": true,
-          "raise_combo_draws": true
+          "raise_combo_draws": true,
+          "do_not_fold_strong_draws": {
+            "criteria": [
+              "Nut flush draw",
+              "OESD + overcards",
+              "12+ outs (e.g., NFD + OESD, pair+FD)",
+              "Combo draws with nut blockers"
+            ],
+            "policy": "Call or semi-bluff raise unless equity < min_required_equity(size) or SPR < 1 causing commits vs stronger ranges"
+          },
+          "min_required_equity": {
+            "by_size": { "0.33": 0.25, "0.5": 0.333, "0.75": 0.43, "1.0": 0.5 }
+          },
+          "paired_or_4flush_boards": "Be cautious semi-bluffing non-nut draws"
         },
         "rivers": {
           "bluff_ratio_by_size": { "0.33": 0.2, "0.5": 0.33, "0.75": 0.43, "1.0": 1.0 },
@@ -52,8 +68,9 @@
           "bottom_pair": { "action": "check_fold", "note": "Occasional bluff-catch with strong blockers only" }
         },
         "first_hand_rules": {
-          "never_fold_unless": ">3BB bet (5/10) or >2BB bet (10/20) + weak cards",
-          "establish_presence": "Play first hand to establish table presence"
+          "never_fold_unless": ">3BB bet (5/10) or >2BB bet (10/20) AND hand_strength weak",
+          "establish_presence": "Play first hand to establish table presence",
+          "safety": "Avoid entering large multiway pots OOP with trash; prefer suited/broadway/connectors if calling"
         }
       },
       "position_strategy": {
@@ -66,7 +83,7 @@
         "value_betting": { "strong": "0.75 pot", "medium": "0.5 pot", "thin": "0.33 pot" },
         "bluffing": { "river_uses_ratio_by_size": true, "turn_bluffs_require_equity": true },
         "pot_odds": { "equity_call_rule": "call if equity >= cost/(pot+cost)" },
-        "max_bet_safety": "25BB (25% of 100BB stack) to prevent huge losses",
+        "max_bet_safety": "25BB default cap — EXCEPT allow shoves with nutted hands or when SPR ≤ 1.5",
         "stack_management": "50-100BB optimal range for 5/10 and 10/20 games"
       },
       "exploits": {
