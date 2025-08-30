@@ -619,20 +619,20 @@ private shouldJamLowSPR(h: HandStrength): boolean {
     // Multiway discipline: no c-bet bluffs without equity/backdoors
     const pip = this.table.getPlayersInPot?.() ?? 2;
     const tag = this.getPrimaryVillainTag();
-
+  
     const threat = this.boardThreatScore();
+  
     // Heads-up, checked to us: cheap stab on low-threat boards with light equity
     if ((this.table.getPlayersInPot?.() ?? 2) === 2 && threat < 2.0) {
-        const heroCards = this.game.getHero()!.getHand();
-        const board = this.parseCommunityCards(this.table.getRunout());
-        if (this.hasLightEquity(heroCards, board) && handStrength.strength <= 3 && !handStrength.type.includes('draw')) {
+      const heroCards = this.game.getHero()!.getHand();
+      const board = this.parseCommunityCards(this.table.getRunout());
+      if (this.hasLightEquity(heroCards, board) && handStrength.strength <= 3 && !handStrength.type.includes('draw')) {
         if (this.isLatePosition(position)) {
-            return { action:"bet", betSize: potSize * 0.33, reasoning:"HU missed c-bet: auto-stab low threat", confidence:0.66 };
+          return { action:"bet", betSize: potSize * 0.33, reasoning:"HU missed c-bet: auto-stab low threat", confidence:0.66 };
         }
-        }
+      }
     }
   
-
     // On high-threat textures, shrink c-bet size and frequency with medium strength
     if (handStrength.strength >= 4 && handStrength.strength < 7 && threat >= 2.5) {
       if (this.isLatePosition(position)) {
@@ -645,44 +645,57 @@ private shouldJamLowSPR(h: HandStrength): boolean {
     if (handStrength.strength >= 7 && threat >= 3.5) {
       return { action:"bet", betSize: potSize * 0.5, reasoning:"Value, but cap size on scary texture", confidence:0.7 };
     }
-    
-
+  
     if (pip >= 3 && !handStrength.type.includes("draw") && handStrength.strength < 4) {
       return { action: "check", reasoning: "Multiway: skip air c-bet", confidence: 0.8 };
+    }
+  
+    // 🚀 Low-SPR jam takes priority over the default strong value bet
+    if (this.shouldJamLowSPR(handStrength)) {
+      // NOTE: ensure betSize units match your engine (BBs vs chips). If chips, divide by big blind.
+      const jamSize = this.game.getHero()!.getStackSize();
+      return {
+        action: "bet",
+        betSize: jamSize,
+        reasoning: "Low SPR — jam with value/robust draws to maximize realization",
+        confidence: 0.82
+      };
     }
   
     if (handStrength.strength >= 7) {
       return { action: "bet", betSize: potSize * 0.75, reasoning: `Strong — value bet`, confidence: 0.9 };
     }
+  
     const tex = this.boardTextureFlags();
-
+  
     if (handStrength.type.includes('draw') && (handStrength.outs ?? 0) >= 8) {
-        // Station rule stays
-        if (tag === 'station' && (handStrength.outs ?? 0) < 12) {
-          return { action: "check", reasoning: "Station: realize equity with weaker draws; bet stronger combos only", confidence: 0.76 };
-        }
-        // Board rule: avoid semibluffing non-nut draws on paired/4-flush boards
-        const heroCards = this.game.getHero()!.getHand();
-        const okToBlast =
-          (!tex.paired && !tex.fourFlush) ||
-          this.hasNutBlockerForFlushDraw(heroCards) ||
-          (handStrength.outs ?? 0) >= 12; // combo draws
-        if (!okToBlast) {
-          return { action: "check", reasoning: "Paired/4-flush board — avoid semibluffing non-nut draws", confidence: 0.78 };
-        }
-        return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw — semi-bluff`, confidence: 0.75 };
+      // Station rule stays
+      if (tag === 'station' && (handStrength.outs ?? 0) < 12) {
+        return { action: "check", reasoning: "Station: realize equity with weaker draws; bet stronger combos only", confidence: 0.76 };
       }
+      // Board rule: avoid semibluffing non-nut draws on paired/4-flush boards
+      const heroCards = this.game.getHero()!.getHand();
+      const okToBlast =
+        (!tex.paired && !tex.fourFlush) ||
+        this.hasNutBlockerForFlushDraw(heroCards) ||
+        (handStrength.outs ?? 0) >= 12; // combo draws
+      if (!okToBlast) {
+        return { action: "check", reasoning: "Paired/4-flush board — avoid semibluffing non-nut draws", confidence: 0.78 };
+      }
+      return { action: "bet", betSize: potSize * 0.5, reasoning: `Strong draw — semi-bluff`, confidence: 0.75 };
+    }
       
     if (handStrength.strength >= 4) {
-        if (this.isLatePosition(position)) {
-          const size = (tag === 'nit') ? (potSize * 0.55) : (potSize * 0.5);
-          return { action: "bet", betSize: size, reasoning: `Medium IP — thin value/deny${tag==='nit'?' vs nit':''}`, confidence: 0.62 };
-        }
-        return { action: "check", reasoning: `Medium OOP — pot control`, confidence: 0.7 };
+      if (this.isLatePosition(position)) {
+        const size = (tag === 'nit') ? (potSize * 0.55) : (potSize * 0.5);
+        return { action: "bet", betSize: size, reasoning: `Medium IP — thin value/deny${tag==='nit'?' vs nit':''}`, confidence: 0.62 };
+      }
+      return { action: "check", reasoning: `Medium OOP — pot control`, confidence: 0.7 };
     }
       
     return { action: "check", reasoning: `Weak — check/fold`, confidence: 0.8 };
   }
+  
   
   /* -------------------- Helpers -------------------- */
 
