@@ -19,6 +19,11 @@ export class Table {
     private logs_queue: Queue<Array<string>>;
     private player_actions: Array<PlayerAction>;
     
+    // Hand history tracking
+    private hand_history: Map<string, Array<PlayerAction>>; // street -> actions
+    private pot_history: Map<string, number>; // street -> pot size
+    private street_order: Array<string>; // tracks order of streets in current hand
+    
     private id_to_action_num: Map<string, number>;
     private id_to_initial_stacks: Map<string, number>;
     private id_to_position: Map<string, string>;
@@ -43,6 +48,11 @@ export class Table {
 
         this.logs_queue = new Queue();
         this.player_actions = new Array<PlayerAction>;
+        
+        // Initialize hand history tracking
+        this.hand_history = new Map<string, Array<PlayerAction>>();
+        this.pot_history = new Map<string, number>();
+        this.street_order = [];
         
         this.id_to_action_num = new Map<string, number>();
         this.id_to_initial_stacks = new Map<string, number>();
@@ -120,6 +130,40 @@ export class Table {
     }
     public resetPlayerActions(): void {
         this.player_actions = new Array<PlayerAction>();
+    }
+
+    // Hand history management methods
+    public saveCurrentStreetActions(): void {
+        if (this.street && this.player_actions.length > 0) {
+            this.hand_history.set(this.street, [...this.player_actions]);
+            this.pot_history.set(this.street, this.pot_size_in_BBs);
+            if (!this.street_order.includes(this.street)) {
+                this.street_order.push(this.street);
+            }
+        }
+    }
+
+    public getHandHistory(): Map<string, Array<PlayerAction>> {
+        return this.hand_history;
+    }
+
+    public getPotHistory(): Map<string, number> {
+        return this.pot_history;
+    }
+
+    public getStreetOrder(): Array<string> {
+        return this.street_order;
+    }
+
+    public getActionsForStreet(street: string): Array<PlayerAction> {
+        return this.hand_history.get(street) || [];
+    }
+
+    public resetHandHistory(): void {
+        this.hand_history.clear();
+        this.pot_history.clear();
+        this.street_order = [];
+        this.player_actions = [];
     }
 
     public getIdToActionNum(): Map<string, number> {
@@ -345,5 +389,58 @@ export class Table {
         this.id_to_action_num = new Map<string, number>();
         this.id_to_position = new Map<string, string>();
         this.id_to_initial_stacks = new Map<string, number>();
+        
+        // Reset hand history for new hand
+        this.resetHandHistory();
+    }
+
+    public getFullHandSummary(): string {
+        let summary = "Hand History:\n";
+        for (const street of this.street_order) {
+            const actions = this.hand_history.get(street);
+            const potSize = this.pot_history.get(street);
+            if (actions && actions.length > 0) {
+                summary += `${street.toUpperCase()}: Pot ${potSize} BB - `;
+                summary += actions.map(action => action.toString()).join(", ");
+                summary += "\n";
+            }
+        }
+        return summary;
+    }
+
+    public getBettingPatterns(): string {
+        let patterns = "Betting patterns in this hand:\n";
+        let totalBets = 0;
+        let totalRaises = 0;
+        let aggressiveStreets = 0;
+        
+        for (const street of this.street_order) {
+            const actions = this.hand_history.get(street);
+            if (actions && actions.length > 0) {
+                let streetBets = 0;
+                let streetRaises = 0;
+                
+                for (const action of actions) {
+                    if (action.getAction() === "bets" || action.getAction() === "raises") {
+                        streetBets++;
+                        totalBets++;
+                        if (action.getAction() === "raises") {
+                            streetRaises++;
+                            totalRaises++;
+                        }
+                    }
+                }
+                
+                if (streetBets > 0) {
+                    patterns += `${street}: ${streetBets} bets, ${streetRaises} raises\n`;
+                    if (streetBets >= 2) {
+                        aggressiveStreets++;
+                    }
+                }
+            }
+        }
+        
+        patterns += `Overall: ${totalBets} total bets, ${totalRaises} total raises, ${aggressiveStreets} aggressive streets\n`;
+        return patterns;
     }
 }

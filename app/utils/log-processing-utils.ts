@@ -55,6 +55,12 @@ export async function postProcessLogs(logs_queue: Queue<Array<string>>, game: Ga
             } else {
                 const street = log[0];
                 const runout = log[1];
+                
+                // Save hand history from previous street before changing to new street
+                if (table.getStreet() && table.getPlayerActions().length > 0) {
+                    table.saveCurrentStreetActions();
+                }
+                
                 table.setStreet(street.toLowerCase());
                 table.setRunout(Array.from(suitToLetter.entries()).reduce((prev, entry) => prev.replaceAll(...entry), runout));
             }

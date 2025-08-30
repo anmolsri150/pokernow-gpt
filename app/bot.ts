@@ -3,7 +3,7 @@ import { ChatCompletionMessageParam } from "openai/resources/chat/completions.mj
 
 import { sleep } from './helpers/bot-helper.ts';
 
-import { AIService, BotAction, defaultCheckAction, defaultFoldAction } from './interfaces/ai-client-interfaces.ts';
+import { AIService, BotAction, defaultCheckAction, defaultFoldAction, AIMessage } from './interfaces/ai-client-interfaces.ts';
 import { ProcessedLogs } from './interfaces/log-processing-interfaces.ts';
 
 import { Game } from './models/game.ts';
@@ -14,6 +14,7 @@ import { PlayerService } from './services/player-service.ts';
 import { PuppeteerService } from './services/puppeteer-service.ts';
 
 import { constructQuery } from './helpers/construct-query-helper.ts';
+import { AIServiceFactory } from './helpers/ai-service-factory.ts';
 
 import { DebugMode, logResponse } from './utils/error-handling-utils.ts';
 import { postProcessLogs, postProcessLogsAfterHand, preProcessLogs } from './utils/log-processing-utils.ts';
@@ -36,6 +37,7 @@ export class Bot {
     private table!: Table;
     private game!: Game;
     private bot_name!: string;
+    private ai_service_factory?: AIServiceFactory;
 
     constructor(log_service: LogService, 
                 ai_service: AIService,
@@ -89,6 +91,18 @@ export class Bot {
             const game_info = this.puppeteer_service.convertGameInfo(res.data as string);
             this.table = new Table(this.player_service);
             this.game = new Game(this.game_id, this.table, game_info.big_blind, game_info.small_blind, game_info.game_type, 30);
+            
+            // Update AI service with game instance if using winning strategy
+            if (this.ai_service_factory) {
+                this.ai_service = this.ai_service_factory.createAIService(
+                    "Ollama", 
+                    "llama3.1:8b", 
+                    "winning", 
+                    this.game
+                );
+                this.ai_service.init();
+                console.log("Updated AI service with game instance for winning strategy");
+            }
         } else {
             throw new Error ("Failed to get game info.");
         }
@@ -323,8 +337,14 @@ export class Bot {
         }
         try {
             await sleep(2000);
-            const ai_response = await this.ai_service.query(query, this.hand_history);
-            this.hand_history = ai_response.prev_messages;
+            
+            // Manage context window - keep only recent messages to stay within token limits
+            const managedHistory = this.manageContextWindow(this.hand_history);
+            
+            const ai_response = await this.ai_service.query(query, managedHistory);
+            
+            // Only keep the most recent messages to prevent context explosion
+            this.hand_history = this.trimHistory(ai_response.prev_messages);
 
             if (await this.isValidBotAction(ai_response.bot_action)) {
                 // only push to hand history if the choice made is valid
@@ -341,11 +361,55 @@ export class Bot {
         }
     }
 
+    /**
+     * Manage context window to stay within token limits for CodeLlama 3.1 8B
+     * Keep only essential messages: system prompt + last 2-3 exchanges
+     */
+    private manageContextWindow(history: AIMessage[]): AIMessage[] {
+        if (history.length <= 6) {
+            return history; // Keep all if under limit
+        }
+        
+        // Always keep system prompt (first message)
+        const systemPrompt = history[0];
+        
+        // Keep last 4 messages (2 exchanges: user + assistant)
+        const recentMessages = history.slice(-4);
+        
+        return [systemPrompt, ...recentMessages];
+    }
+
+    /**
+     * Trim history to prevent context explosion
+     */
+    private trimHistory(history: AIMessage[]): AIMessage[] {
+        // Keep only last 6 messages max (system + 2 exchanges)
+        if (history.length <= 6) {
+            return history;
+        }
+        
+        const systemPrompt = history[0];
+        const recentMessages = history.slice(-5); // Keep last 5 non-system messages
+        
+        return [systemPrompt, ...recentMessages];
+    }
+
     private async isValidBotAction(bot_action: BotAction): Promise<boolean> {
         console.log("Attempted Bot Action:", bot_action);
         const valid_actions: string[] = ["bet", "raise", "call", "check", "fold", "all-in"];
         const curr_stack_size_in_BBs = this.game.getHero()!.getStackSize();
         console.log("Bot Stack in BBs:", curr_stack_size_in_BBs);
+        
+        // Safety check: prevent overly aggressive betting for 5/10 and 10/20 games
+        if (bot_action.action_str === "bet" || bot_action.action_str === "raise") {
+            // For 50-100BB stacks, limit to 25BB max bet (25% of 100BB stack)
+            const maxBetSize = Math.min(25, curr_stack_size_in_BBs * 0.25);
+            if (bot_action.bet_size_in_BBs > maxBetSize) {
+                console.log(`Bet size too large, capping at ${maxBetSize}BB for ${curr_stack_size_in_BBs}BB stack`);
+                bot_action.bet_size_in_BBs = maxBetSize;
+            }
+        }
+        
         let is_valid = false;
         if (bot_action.action_str && valid_actions.includes(bot_action.action_str)) {
             let res;
@@ -423,5 +487,9 @@ export class Bot {
                 }
                 break;
         }
+    }
+
+    public setAIServiceFactory(factory: AIServiceFactory): void {
+        this.ai_service_factory = factory;
     }
 }

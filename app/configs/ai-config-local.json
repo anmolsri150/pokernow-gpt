@@ -1,0 +1,5 @@
+{
+    "provider": "Ollama",
+    "model_name": "llama3.1:8b",
+    "playstyle": "neutral"
+} 

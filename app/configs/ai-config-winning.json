@@ -19,7 +19,7 @@
         },
         "four_bet": { "value": ["KK+", "AKs"], "bluff": ["A5s-A4s (mix)"] },
         "vs_limp": {
-          "iso_sizes": { "IP": "4-5BB + 1BB/limper", "OOP": "5-6BB + 1BB/limper" },
+          "iso_sizes": { "IP": "3-4BB + 1BB/limper", "OOP": "4-5BB + 1BB/limper" },
           "iso_range": { "tight_multiway": true }
         },
         "stack_depth": {
@@ -30,7 +30,7 @@
       },
       "postflop_rules": {
         "sizing": {
-          "dry_ace_high": "0.33 pot high frequency",
+          "dry_ace_high": "0.5 pot high frequency",
           "wet_connected": "0.6-0.75 pot polarized",
           "turn_barrel_with_equity": "≈0.6 pot when equity+fold equity adequate"
         },
@@ -50,18 +50,24 @@
           "top_pair_plus": { "action": "value_bet", "size": "0.5-0.75 pot" },
           "second_pair": { "action": "check_call", "note": "Fold to big aggression on scary boards" },
           "bottom_pair": { "action": "check_fold", "note": "Occasional bluff-catch with strong blockers only" }
+        },
+        "first_hand_rules": {
+          "never_fold_unless": ">3BB bet (5/10) or >2BB bet (10/20) + weak cards",
+          "establish_presence": "Play first hand to establish table presence"
         }
       },
       "position_strategy": {
         "early_position": { "tight_range": true, "raise_size": "2.5-3BB", "fold_to_3bet": "vs tight" },
-        "middle_position": { "moderate_range": true, "raise_size": "2.2-2.8BB" },
-        "late_position": { "wide_range": true, "raise_size": "2-2.5BB" },
+        "middle_position": { "moderate_range": true, "raise_size": "2.5-3BB" },
+        "late_position": { "wide_range": true, "raise_size": "2.5-3BB" },
         "blinds": { "defend_vs_size": true, "3bet_linear_vs_steal": true }
       },
       "betting_strategy": {
         "value_betting": { "strong": "0.75 pot", "medium": "0.5 pot", "thin": "0.33 pot" },
         "bluffing": { "river_uses_ratio_by_size": true, "turn_bluffs_require_equity": true },
-        "pot_odds": { "equity_call_rule": "call if equity >= cost/(pot+cost)" }
+        "pot_odds": { "equity_call_rule": "call if equity >= cost/(pot+cost)" },
+        "max_bet_safety": "25BB (25% of 100BB stack) to prevent huge losses",
+        "stack_management": "50-100BB optimal range for 5/10 and 10/20 games"
       },
       "exploits": {
         "vs_overfolders": { "bluff_more": true, "use_smaller_sizes": true },

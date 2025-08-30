@@ -51,6 +51,25 @@ Furthermore, GTO strategies generally can't make use of opponents' VPIP (volunta
 
 As ChatGPT and LLMs/generative models as a whole improve over time, we can and should expect ChatGPT to become a stronger, more profitable poker player.
 
+### Winning Strategy
+
+This bot now includes a comprehensive **Winning Strategy** that combines rule-based decision making with AI enhancement. The strategy implements proven poker principles:
+
+**Key Features:**
+- **Tight-Aggressive Preflop**: Only plays strong hands but plays them aggressively
+- **Position-Based Play**: Expands ranges in late position, tightens in early position
+- **Drawing Hand Mastery**: Always plays flush draws and straight draws when pot odds are favorable
+- **Value Betting**: Bets for value with strong hands, checks weak hands
+- **Pot Odds Calculation**: Makes mathematically correct decisions based on drawing odds
+
+**Strategy Components:**
+- Preflop hand selection based on position and hand strength
+- Postflop drawing hand evaluation with exact pot odds
+- Position-based aggression and bet sizing
+- Rule-based decision making with AI fallback
+
+For detailed strategy information, see [WINNING_STRATEGY_GUIDE.md](WINNING_STRATEGY_GUIDE.md).
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
@@ -89,9 +108,23 @@ As ChatGPT and LLMs/generative models as a whole improve over time, we can and s
    ```json
    {
      "provider": "PROVIDER",
-     "model_name": "MODEL"
+     "model_name": "MODEL",
+     "playstyle": "PLAYSTYLE"
    }
    ```
+   
+   **Available Playstyles:**
+   - `"winning"` - Rule-based winning strategy with fixed poker rules
+   - `"pro"` - Professional aggressive play
+   - `"aggressive"` - Maniac-style aggressive play
+   - `"passive"` - Tight-nit play
+   - `"neutral"` - Balanced playstyle
+   
+   **Quick Setup for Winning Strategy:**
+   ```sh
+   node switch-to-winning.js
+   ```
+   
 6. Run the app
    ```sh
    npx tsx app/index.ts
@@ -101,15 +134,29 @@ As ChatGPT and LLMs/generative models as a whole improve over time, we can and s
 
 <!-- SUPPORTED MODELS -->
 ## Supported Models
-providers
----
-"OpenAI", "Google"
 
-models
----
-OpenAI: "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4o"
+### Cloud Providers
+- **OpenAI**: "gpt-3.5-turbo", "gpt-4-turbo", "gpt-4o"
+- **Google**: "gemini-1.5-flash", "gemini-1.0-pro", "gemini-1.5-pro"
 
-Google: "gemini-1.5-flash", "gemini-1.0-pro", "gemini-1.5-pro"
+### Local Models (Ollama)
+- **Ollama**: "llama3.1:8b", "llama3.1:8b-instruct", "codellama:7b", "phi3:mini", "mistral:7b", "llama2:7b", "llama2:13b"
+
+### Using Local Models
+To use local models instead of cloud APIs:
+
+1. **Install Ollama**: Follow the guide in `setup-ollama.md`
+2. **Switch to local config**: `node switch-to-local.js`
+3. **Pull a model**: `ollama pull llama3.1:8b`
+4. **Start Ollama**: `ollama serve`
+5. **Run your bot**: `npx tsx app/index.ts`
+
+**Recommended for your hardware (32GB RAM, RTX 3070):**
+- **Best balance**: `llama3.1:8b` (4.7GB, excellent reasoning)
+- **Fastest**: `phi3:mini` (2.3GB, very fast)
+- **Best quality**: `llama2:13b` (7.3GB, highest quality)
+
+See `setup-ollama.md` for detailed setup instructions.
 
 <!-- LICENSE -->
 ## License

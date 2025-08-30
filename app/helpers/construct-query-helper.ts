@@ -34,31 +34,31 @@ export function constructQuery(game: Game): string{
     query = query.concat(definePotSize(pot_size), `\n`);
     query = query.concat(defineActions(player_actions, table), '\n');
     query = query.concat(defineStats(player_positions, table, hero_name), '\n');
+    query = query.concat(defineHandHistory(table), '\n');
+    query = query.concat(defineBettingPatterns(table), '\n');
     query = query.concat(defineOutput());
 
     return query;
 }
 
 function defineObjective(position: string, stack_size: number): string {
-    return `Help me decide my action in No Limit Hold'em poker. I'm in the ${position} position with a stack size of ${stack_size} BB.`;
+    return `NL Hold'em. ${position} position, ${stack_size}BB stack.`;
 }
 
 function defineGameState(street: string, players_in_pot: number): string {
-    return `It is ${players_in_pot}-handed, and the current street is: ${street ? street : "preflop"}.`
+    return `${players_in_pot}-handed, ${street ? street : "preflop"}.`
 }
 
 function defineCommunityCards(street: string, runout: string): string {
-    let query;
     if (street && runout) {
-        query = `The current community cards are: ${runout}`;
+        return `Board: ${runout}`;
     } else {
-        query = "There are currently no community cards showing."
+        return "Board: None";
     }
-    return query;
 }
 
 function defineHand(hero_cards: string[]): string {
-    return `My hole cards are: ${hero_cards.join(", ")}`;
+    return `Hand: ${hero_cards.join(" ")}`;
 }
 
 export function defineRank(street: string, runout: string, hero_cards: string[]): string {
@@ -122,8 +122,9 @@ function replaceTenWithLetter(cards: string[]): string[] {
 }
 
 function defineStacks(player_stacks: Map<string, number>, player_positions: Map<string, string>, hero_id: string): string {
-    let query = "Here are the initial stack sizes of the other players in the pot, defined in the format {position: stack_size_in_BBs}:\n";
     const player_ids = Array.from(player_positions.keys());
+    const stacks = [];
+    
     for (var i = 0; i < player_ids.length; i++)  {
         const player_id = player_ids[i]
         if (player_id === hero_id) {
@@ -131,35 +132,37 @@ function defineStacks(player_stacks: Map<string, number>, player_positions: Map<
         }
         const player_pos = player_positions.get(player_id);
         const stack_size = player_stacks.get(player_id);
-        query = query.concat(`{${player_pos}: ${stack_size} BBs}`)
-        if (i != player_ids.length - 1) {
-            query = query.concat(", ");
+        stacks.push(`${player_pos}: ${stack_size}BB`);
+    }
+    
+    return stacks.length > 0 ? `Stacks: ${stacks.join(", ")}` : "Stacks: No other players";
+}
+
+function definePotSize(pot_size_in_BBs: number): string {
+    return `Pot: ${pot_size_in_BBs}BB`;
+}
+
+function defineActions(player_actions: Array<PlayerAction>, table: Table): string {
+    if (player_actions.length === 0) {
+        return "No actions have been taken on this street yet.";
+    }
+    
+    let query = "CURRENT STREET ACTIONS (in order):\n";
+    for (var i = 0; i < player_actions.length; i++)  {
+        let player_pos = table.getPlayerPositionFromId(player_actions[i].getPlayerId());
+        let player_action_string = player_actions[i].toString();
+        let curr = `${i + 1}. ${player_pos}: ${player_action_string}`;
+        query = query.concat(curr);
+        if (i != player_actions.length - 1) {
+            query = query.concat("\n");
         }
     }
     return query;
 }
 
-function definePotSize(pot_size_in_BBs: number): string {
-    return `The current pot size before any actions were made in the street is ${pot_size_in_BBs} BB.`;
-}
-
-function defineActions(player_actions: Array<PlayerAction>, table: Table): string {
-    let query = "Here are the previous actions in this street, defined in the format {position action bet_size_in_BBs}:\n";
-    for (var i = 0; i < player_actions.length; i++)  {
-        let player_pos = table.getPlayerPositionFromId(player_actions[i].getPlayerId());
-        let player_action_string = player_actions[i].toString();
-        let curr = `{${player_pos} ${player_action_string}}`;
-        if (i != player_actions.length - 1) {
-            curr = curr.concat(", ");
-        }
-        query = query.concat(curr);
-    }
-    return query
-}
-
 function defineStats(player_positions: Map<string, string>, table: Table, hero_name: string): string {
-    let query = "Here are the stats of the other players in the pot, defined in the format {position: Total Hands Played = total_hands, VPIP = vpip_stat, PFR = pfr_stat}:\n"
-    let player_ids = Array.from(player_positions.keys());
+    const player_ids = Array.from(player_positions.keys());
+    const stats = [];
 
     for (var i = 0; i < player_ids.length; i++)  {
         const player_id = player_ids[i];
@@ -169,15 +172,52 @@ function defineStats(player_positions: Map<string, string>, table: Table, hero_n
         }
         const player_stats = table.getPlayerStatsFromName(player_name);
         const player_pos = table.getPlayerPositionFromId(player_id);
-        let curr = `{${player_pos}: Total Hands Played = ${player_stats.getTotalHands()}, VPIP = ${player_stats.computeVPIPStat().toFixed(2)}, PFR = ${player_stats.computePFRStat().toFixed(2)}}`;
-        if (i != player_ids.length - 1) {
-            curr = curr.concat("\n");
+        const vpip = player_stats.computeVPIPStat().toFixed(1);
+        const pfr = player_stats.computePFRStat().toFixed(1);
+        const hands = player_stats.getTotalHands();
+        
+        if (hands > 0) {
+            stats.push(`${player_pos}: ${hands}h VPIP${vpip}% PFR${pfr}%`);
         }
-        query = query.concat(curr);
     }
-    return query;
+    
+    return stats.length > 0 ? `Stats: ${stats.join(", ")}` : "Stats: No data";
 }
 
 function defineOutput(): string {
-    return "Do not provide an explanation, respond in this format: {action, bet_size_in_BBs BB}";
+    return "Decide your action. Consider hand strength, position, pot odds, opponent tendencies. If weak or no odds, fold. Only bet/raise with strong hands or good draws. Respond: {action, bet_size_in_BBs BB}";
+}
+
+function defineHandHistory(table: Table): string {
+    const handHistory = table.getHandHistory();
+    const potHistory = table.getPotHistory();
+    const streetOrder = table.getStreetOrder();
+    const currentStreet = table.getStreet();
+    
+    if (handHistory.size === 0) {
+        return "History: First action";
+    }
+    
+    const history = [];
+    for (const street of streetOrder) {
+        if (street === currentStreet) continue; // Skip current street
+        
+        const actions = handHistory.get(street);
+        const potSize = potHistory.get(street);
+        
+        if (actions && actions.length > 0) {
+            const actionSummary = actions.map(action => action.toString()).join(", ");
+            history.push(`${street}: ${potSize}BB - ${actionSummary}`);
+        }
+    }
+    
+    return history.length > 0 ? `History: ${history.join(" | ")}` : "History: None";
+}
+
+function defineBettingPatterns(table: Table): string {
+    const patterns = table.getBettingPatterns();
+    if (!patterns || patterns.trim() === "") {
+        return "Patterns: None";
+    }
+    return `Patterns: ${patterns}`;
 }
